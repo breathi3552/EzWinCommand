@@ -1,2 +1,3 @@
 @echo off
-start "" /B pythonw.exe "%~dp0app.py"
+cd /d "%~dp0"
+pythonw.exe app.py
