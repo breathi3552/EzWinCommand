@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from agent.api import router as api_router
 from agent.dispatcher import Dispatcher
+from agent.firewall import add_rule
 import config
 
 logging.basicConfig(
@@ -38,6 +39,9 @@ if web_dir.is_dir():
 
 def main() -> None:
     import uvicorn
+
+    # —— 启动时自动配置防火墙 ——
+    add_rule(config.PORT)
 
     logger.info("启动 EzWinCommand Agent @ http://%s:%d", config.HOST, config.PORT)
     uvicorn.run(app, host=config.HOST, port=config.PORT)
