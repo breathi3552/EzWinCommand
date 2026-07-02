@@ -42,9 +42,26 @@ h1 {
 }
 
 #actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.plugin-card {
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+.plugin-card h3 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    color: #aaa;
+}
+.btn-group {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
 button {

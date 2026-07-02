@@ -16,23 +16,51 @@ async function loadActions() {
         const container = document.getElementById("actions");
         container.innerHTML = "";
 
-        for (const action of data.actions) {
-            const btn = document.createElement("button");
-            btn.textContent = action;
-            btn.addEventListener("click", () => sendCommand(action));
-            container.appendChild(btn);
+        for (const plugin of data.actions) {
+            const card = document.createElement("div");
+            card.className = "plugin-card";
+
+            const title = document.createElement("h3");
+            title.textContent = plugin.label;
+            card.appendChild(title);
+
+            if (plugin.sub_actions.length === 0) {
+                // 简单触发型：单个按钮
+                const btn = document.createElement("button");
+                btn.textContent = plugin.label;
+                btn.addEventListener("click", () =>
+                    sendCommand(plugin.name)
+                );
+                card.appendChild(btn);
+            } else {
+                // 子操作型：按钮组
+                const group = document.createElement("div");
+                group.className = "btn-group";
+
+                for (const sub of plugin.sub_actions) {
+                    const btn = document.createElement("button");
+                    btn.textContent = sub.label;
+                    btn.addEventListener("click", () =>
+                        sendCommand(plugin.name, { sub_action: sub.id })
+                    );
+                    group.appendChild(btn);
+                }
+                card.appendChild(group);
+            }
+
+            container.appendChild(card);
         }
     } catch {
         // 忽略
     }
 }
 
-async function sendCommand(action) {
+async function sendCommand(action, params = {}) {
     try {
         const resp = await fetch("/api/command", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
+            body: JSON.stringify({ action, params }),
         });
         const result = await resp.json();
         console.log(action, result);
