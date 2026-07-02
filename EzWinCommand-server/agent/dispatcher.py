@@ -2,17 +2,10 @@
 
 API 不直接执行命令，而是通过 Dispatcher 分发到对应插件。
 """
-from dataclasses import dataclass, field
 from typing import Any
 
+from plugins.base import CommandResult
 from plugins.loader import PluginLoader
-
-
-@dataclass
-class CommandResult:
-    success: bool
-    message: str = ""
-    data: dict[str, Any] | None = None
 
 
 class Dispatcher:
