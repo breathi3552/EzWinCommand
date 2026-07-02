@@ -1,0 +1,5 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+psutil>=6.0.0
+pywin32>=306
+python-dotenv>=1.0.0
