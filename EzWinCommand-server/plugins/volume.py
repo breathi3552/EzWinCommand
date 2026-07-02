@@ -10,8 +10,15 @@ from plugins.base import BasePlugin, CommandResult
 
 class VolumePlugin(BasePlugin):
     name = "volume"
+    label = "音量控制"
 
-    # 虚拟键码
+    def get_sub_actions(self) -> list[dict[str, str]]:
+        return [
+            {"id": "up",   "label": "+"},
+            {"id": "down", "label": "-"},
+            {"id": "mute", "label": "静音"},
+        ]
+
     VK_VOLUME_MUTE = 0xAD
     VK_VOLUME_DOWN = 0xAE
     VK_VOLUME_UP = 0xAF

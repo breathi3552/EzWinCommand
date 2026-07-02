@@ -44,6 +44,13 @@ class Dispatcher:
         except Exception as exc:
             return CommandResult(success=False, message=f"插件执行异常: {exc}")
 
-    def list_actions(self) -> list[str]:
-        """返回所有已注册的 action 名称。"""
-        return list(self._loader.plugins.keys())
+    def list_actions(self) -> list[dict[str, Any]]:
+        """返回所有已注册插件的结构化信息。"""
+        result: list[dict[str, Any]] = []
+        for name, plugin in self._loader.plugins.items():
+            result.append({
+                "name": name,
+                "label": getattr(plugin, "label", None) or name,
+                "sub_actions": plugin.get_sub_actions(),
+            })
+        return result
