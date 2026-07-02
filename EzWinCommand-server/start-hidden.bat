@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start /B "EzWinCommand" pythonw.exe app.py
+start "EzWinCommand" /B pythonw.exe app.py
