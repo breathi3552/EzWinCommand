@@ -33,3 +33,13 @@
 - FastAPI + Uvicorn
 - pywin32（已有依赖，零增量）
 - 纯静态 HTML+JS Web UI
+
+## 文档归档
+
+- 所有开发资料存放于 `docs/{版本号}/` 下，当前版本 `v0.1`。
+- 用户下发的需求 → 创建 `REQ-{NNN}-{简称}/` 目录，填写 `requirement.md`。
+- SE 分析产出 → `se-analysis.md`，归档于对应原始需求目录。
+- 每个拆分的子需求 → `REQ-{NNN}-{MM}-{简称}/` 子目录，含 `design.md`。
+- 测试发现的问题 → 记录于各子需求目录下的 `test-records.md`，表格形式。
+- 编号规则：原始需求 `REQ-001` 起三位递增，拆分子需求 `REQ-001-01` 起两位递增。
+- 详细规范见 `docs/README.md`。
