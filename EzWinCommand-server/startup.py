@@ -12,9 +12,9 @@ VALUE_NAME = "EzWinCommandAgent"
 
 
 def _get_command() -> str:
-    """构建开机启动命令行：pythonw.exe <app.py 绝对路径>"""
+    """构建开机启动命令行：pythonw.exe <start_daemon.pyw 绝对路径>"""
     pythonw = Path(sys.executable).parent / "pythonw.exe"
-    app_path = (Path(__file__).parent / "app.py").resolve()
+    app_path = (Path(__file__).parent / "start_daemon.pyw").resolve()
     return f'"{pythonw}" "{app_path}"'
 
 
