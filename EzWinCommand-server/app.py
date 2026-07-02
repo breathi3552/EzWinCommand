@@ -2,6 +2,7 @@
 
 启动 FastAPI 服务，初始化 Dispatcher 并挂载 Web UI。
 """
+import argparse
 import logging
 from pathlib import Path
 
@@ -47,5 +48,31 @@ def main() -> None:
     uvicorn.run(app, host=config.HOST, port=config.PORT)
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="EzWinCommand Agent",
+        description="Windows 命令代理服务",
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--install", action="store_true",
+        help="注册开机自启动",
+    )
+    group.add_argument(
+        "--uninstall", action="store_true",
+        help="注销开机自启动",
+    )
+    return parser.parse_args()
+
 if __name__ == "__main__":
-    main()
+    args = _parse_args()
+    if args.install:
+        from startup import install
+        install()
+        print("EzWinCommand Agent 已注册开机自启动。")
+    elif args.uninstall:
+        from startup import uninstall
+        uninstall()
+        print("EzWinCommand Agent 已注销开机自启动。")
+    else:
+        main()
