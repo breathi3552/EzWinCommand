@@ -26,7 +26,7 @@ class CommandResult:
         self.message = message
         self.data = data
 
-    def __dict__(self) -> dict:
+    def to_dict(self) -> dict:
         return {"success": self.success, "message": self.message, "data": self.data}
 
 

@@ -45,7 +45,7 @@ async def execute_command(request: Request):
     action = body.get("action", "")
     params = body.get("params")
     result = dispatcher.execute(action, params)
-    return result.__dict__
+    return {"success": result.success, "message": result.message, "data": result.data}
 
 
 @router.get("/api/actions")

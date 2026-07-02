@@ -9,6 +9,7 @@ from plugins.base import BasePlugin, CommandResult
 
 class CalculatorPlugin(BasePlugin):
     name = "calculator"
+    label = "计算器"
 
     def execute(self, params: dict[str, Any]) -> CommandResult:
         action = params.get("sub_action", "open")
