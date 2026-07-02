@@ -12,19 +12,39 @@ RULE_NAME = "EzWinCommand 8080"
 
 
 def _run_netsh(args: list[str]) -> tuple[bool, str]:
-    """执行 netsh 命令，返回 (成功, 输出)。"""
+    """执行 netsh 命令，返回 (成功, 输出)。
+
+    显式使用 mbcs 编码（Windows 当前 ANSI 代码页），
+    配合 errors="replace" 防止 netsh 中文输出中的异常字节导致崩溃。
+    """
     try:
         result = subprocess.run(
             ["netsh", "advfirewall", "firewall", *args],
             capture_output=True,
-            text=True,
             timeout=10,
         )
-        return result.returncode == 0, result.stdout.strip()
     except subprocess.TimeoutExpired:
         return False, "命令超时"
     except FileNotFoundError:
         return False, "netsh 不可用"
+
+    # 安全解码：优先 mbcs（GBK），失败则用 replace
+    stdout = ""
+    if result.stdout:
+        try:
+            stdout = result.stdout.decode("mbcs", errors="replace").strip()
+        except LookupError:
+            stdout = result.stdout.decode("utf-8", errors="replace").strip()
+
+    stderr = ""
+    if result.stderr:
+        try:
+            stderr = result.stderr.decode("mbcs", errors="replace").strip()
+        except LookupError:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+
+    output = stdout or stderr
+    return result.returncode == 0, output
 
 
 def rule_exists() -> bool:
