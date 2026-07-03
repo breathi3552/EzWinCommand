@@ -24,5 +24,8 @@ Thumbs.db
 .omp/
 docs/
 
+
+# 设备鉴权数据（运行时生成）
+agent/devices.json
 # 测试产物
 test_screenshots/

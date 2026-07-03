@@ -1,3 +1,7 @@
+/* ============================================================
+   EzWinCommand Web UI — 移动端优先，深色主题
+   ============================================================ */
+
 * {
     margin: 0;
     padding: 0;
@@ -10,7 +14,7 @@ body {
     color: #e0e0e0;
     max-width: 480px;
     margin: 0 auto;
-    padding: 24px 16px;
+    padding: 24px 16px 48px;
 }
 
 h1 {
@@ -19,6 +23,119 @@ h1 {
     margin-bottom: 24px;
     color: #fff;
 }
+
+/* ===== 配对页 ===== */
+
+#pairing-page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 28px;
+    padding-top: 40px;
+}
+
+#pairing-code-section {
+    text-align: center;
+}
+
+.pairing-label {
+    font-size: 0.9rem;
+    color: #8888aa;
+    margin-bottom: 12px;
+    letter-spacing: 0.05em;
+}
+
+#pairing-code {
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 56px;
+    font-weight: 700;
+    letter-spacing: 12px;
+    color: #4fc3f7;
+    background: #0d1b3e;
+    border-radius: 14px;
+    padding: 16px 24px;
+    user-select: all;
+    cursor: pointer;
+    border: 2px solid #4fc3f7;
+    text-shadow: 0 0 20px rgba(79, 195, 247, 0.4);
+}
+
+#pairing-code:empty::after {
+    content: "----";
+    color: #444;
+    text-shadow: none;
+}
+
+.pairing-hint {
+    font-size: 0.8rem;
+    color: #666;
+    margin-top: 10px;
+}
+
+#code-input-area {
+    text-align: center;
+    width: 100%;
+    max-width: 320px;
+}
+
+#code-inputs {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.code-cell {
+    width: 56px;
+    height: 64px;
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 32px;
+    text-align: center;
+    background: #0d1b3e;
+    border: 2px solid #334;
+    border-radius: 12px;
+    color: #e0e0e0;
+
+    border-color: #4fc3f7;
+    box-shadow: 0 0 12px rgba(79, 195, 247, 0.3);
+}
+
+#pair-btn {
+    width: 100%;
+    padding: 16px;
+    font-size: 1.2rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    background: linear-gradient(135deg, #0f3460, #1a5a9a);
+    color: #fff;
+    letter-spacing: 0.3em;
+    transition: background 0.2s, transform 0.1s;
+}
+
+#pair-btn:hover {
+    background: linear-gradient(135deg, #1a4a8a, #2670b0);
+}
+
+#pair-btn:active {
+    transform: scale(0.97);
+}
+
+#pair-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+#pair-error {
+    color: #ff6b6b;
+    font-size: 0.85rem;
+    margin-top: 12px;
+    min-height: 1.2em;
+}
+
+/* ===== 控制面板 ===== */
 
 #status {
     background: #16213e;
@@ -44,7 +161,6 @@ h1 {
 #actions {
     display: flex;
     flex-direction: column;
-    gap: 0;
 }
 
 .plugin-card {
@@ -53,11 +169,13 @@ h1 {
     padding: 12px;
     margin-bottom: 12px;
 }
+
 .plugin-card h3 {
     margin: 0 0 8px 0;
     font-size: 14px;
     color: #aaa;
 }
+
 .btn-group {
     display: flex;
     gap: 8px;
@@ -81,4 +199,99 @@ button:hover {
 
 button:active {
     background: #0a2550;
+}
+
+/* ===== 设备管理面板 ===== */
+
+#device-manager {
+    margin-top: 32px;
+    border-top: 1px solid #333;
+    padding-top: 16px;
+}
+
+#device-manager summary {
+    font-size: 0.95rem;
+    color: #8888aa;
+    cursor: pointer;
+    padding: 8px 0;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+#device-manager summary:hover {
+    color: #ccc;
+}
+
+#device-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 0.8rem;
+}
+
+#device-table th {
+    text-align: left;
+    color: #666;
+    font-weight: 500;
+    padding: 8px 4px;
+    border-bottom: 1px solid #333;
+    white-space: nowrap;
+}
+
+#device-table td {
+    padding: 8px 4px;
+    border-bottom: 1px solid #222;
+    vertical-align: middle;
+}
+
+#device-table td:last-child {
+    text-align: center;
+}
+
+#device-table tbody tr:hover {
+    background: #0d1b3e;
+}
+
+.revoke-btn {
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    background: #5a1a1a;
+    border-radius: 6px;
+}
+
+.revoke-btn:hover {
+    background: #8a2a2a;
+}
+
+#device-empty {
+    text-align: center;
+    color: #555;
+    font-size: 0.85rem;
+    margin-top: 12px;
+}
+
+/* ===== 移动端适配 ===== */
+
+@media (max-width: 360px) {
+    #pairing-code {
+        font-size: 40px;
+        letter-spacing: 8px;
+        padding: 12px 16px;
+    }
+
+    .code-cell {
+        width: 48px;
+        height: 56px;
+        font-size: 28px;
+    }
+
+    #code-inputs {
+        gap: 8px;
+    }
+
+    #device-table th,
+    #device-table td {
+        font-size: 0.7rem;
+        padding: 6px 2px;
+    }
 }

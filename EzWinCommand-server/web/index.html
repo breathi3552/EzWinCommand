@@ -7,12 +7,56 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <h1>EzWinCommand</h1>
-    <div id="status">
-        <p>CPU: <span id="cpu">--</span>%</p>
-        <p>内存: <span id="memory">--</span>%</p>
+    <!-- ===== 配对页 ===== -->
+    <div id="pairing-page">
+        <h1>EzWinCommand</h1>
+
+        <div id="pairing-code-section">
+            <p class="pairing-label">配对码</p>
+            <div id="pairing-code">----</div>
+            <p class="pairing-hint">请在另一设备上输入此配对码</p>
+        </div>
+
+        <div id="code-input-area">
+            <p class="pairing-label">输入配对码</p>
+            <div id="code-inputs">
+                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+            </div>
+            <button id="pair-btn">配 对</button>
+            <p id="pair-error"></p>
+        </div>
     </div>
-    <div id="actions"></div>
+
+    <!-- ===== 控制面板 ===== -->
+    <div id="dashboard" style="display:none">
+        <h1>EzWinCommand</h1>
+        <div id="status">
+            <p>CPU: <span id="cpu">--</span>%</p>
+            <p>内存: <span id="memory">--</span>%</p>
+        </div>
+        <div id="actions"></div>
+
+        <!-- 设备管理 -->
+        <details id="device-manager">
+            <summary>设备管理</summary>
+            <table id="device-table">
+                <thead>
+                    <tr>
+                        <th>设备名</th>
+                        <th>配对时间</th>
+                        <th>最后活跃</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="device-tbody"></tbody>
+            </table>
+            <p id="device-empty" style="display:none">暂无已配对设备</p>
+        </details>
+    </div>
+
     <script src="/static/app.js"></script>
 </body>
 </html>

@@ -11,6 +11,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from agent.api import router as api_router
+from agent.device_store import DeviceStore
+from agent.auth import AuthManager, create_auth_middleware
 from agent.dispatcher import Dispatcher
 from agent.firewall import add_rule
 import config
@@ -36,6 +38,18 @@ app.include_router(api_router)
 web_dir = Path(__file__).parent / "web"
 if web_dir.is_dir():
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="webui")
+
+# —— 初始化鉴权系统 ——
+device_store = DeviceStore()
+auth_manager = AuthManager(device_store)
+app.state.auth_manager = auth_manager
+app.add_middleware(create_auth_middleware(auth_manager))
+
+pairing_code = auth_manager.get_pairing_code()
+if pairing_code:
+    logger.info("配对码: %s（无已配对设备时有效）", pairing_code)
+else:
+    logger.info("已有 %d 台配对设备，配对码已禁用", len(auth_manager.list_devices()))
 
 
 def main() -> None:

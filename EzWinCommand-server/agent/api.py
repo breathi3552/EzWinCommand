@@ -3,6 +3,7 @@
 所有的 API 端点在此定义，命令执行通过 Dispatcher 分发。
 """
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from agent.dispatcher import Dispatcher
 
@@ -53,3 +54,63 @@ async def list_actions(request: Request):
     """列出所有可用的 action。"""
     dispatcher = _get_dispatcher(request)
     return {"actions": dispatcher.list_actions()}
+
+
+def _get_auth_manager(request: Request):
+    """从 app state 中获取 AuthManager 单例。"""
+    return request.app.state.auth_manager
+
+
+@router.get("/api/pairing-code")
+async def get_pairing_code(request: Request):
+    """获取当前配对码（无设备时有效）。
+
+    无需鉴权。有设备时 code 为 None。
+    """
+    auth_manager = _get_auth_manager(request)
+    code = auth_manager.get_pairing_code()
+    return {"code": code, "has_devices": auth_manager.has_devices()}
+
+
+@router.post("/api/authorize")
+async def authorize(request: Request):
+    """新设备配对鉴权。
+
+    无需鉴权。Body: {"token": "配对码", "name": "设备名称"}。
+    成功返回 201 + device_key，失败返回 403。
+    """
+    body = await request.json()
+    token = body.get("token", "")
+    name = body.get("name", "")
+    auth_manager = _get_auth_manager(request)
+    device_key = auth_manager.try_pair(token, name)
+    if device_key:
+        return JSONResponse(
+            status_code=201,
+            content={"success": True, "device_key": device_key},
+        )
+    return JSONResponse(
+        status_code=403,
+        content={"success": False, "message": "配对码无效或已锁定"},
+    )
+
+
+@router.get("/api/devices")
+async def list_devices(request: Request):
+    """列出所有已配对设备。
+
+    需要鉴权。
+    """
+    auth_manager = _get_auth_manager(request)
+    return {"devices": auth_manager.list_devices()}
+
+
+@router.delete("/api/devices/{device_key}")
+async def remove_device(device_key: str, request: Request):
+    """移除已配对设备。
+
+    需要鉴权。
+    """
+    auth_manager = _get_auth_manager(request)
+    success = auth_manager.remove_device(device_key)
+    return {"success": success}
