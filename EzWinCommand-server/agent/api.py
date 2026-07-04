@@ -4,6 +4,7 @@
 """
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from agent.dispatcher import Dispatcher
 
@@ -113,4 +114,32 @@ async def remove_device(device_key: str, request: Request):
     """
     auth_manager = _get_auth_manager(request)
     success = auth_manager.remove_device(device_key)
+    return {"success": success}
+
+
+@router.post("/api/pairing-code/refresh")
+async def refresh_pairing_code(request: Request):
+    """强制生成新配对码（仅 localhost 可达，中间件已保证）。
+
+    Returns:
+        {"code": "a3x9", "expires_in": 300}
+    """
+    auth_manager = _get_auth_manager(request)
+    code = auth_manager.generate_new_code()
+    return {"code": code, "expires_in": 300}
+
+
+class _RenameBody(BaseModel):
+    """设备重命名请求体。"""
+    name: str
+
+
+@router.patch("/api/devices/{device_key}")
+async def rename_device(device_key: str, body: _RenameBody, request: Request):
+    """重命名已配对设备。
+
+    需要鉴权。
+    """
+    auth_manager = _get_auth_manager(request)
+    success = auth_manager.rename_device(device_key, body.name)
     return {"success": success}

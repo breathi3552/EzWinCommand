@@ -18,6 +18,7 @@ WM_TRAY = win32con.WM_USER + 1
 # 菜单项 ID
 ID_EXIT = 1001
 ID_STATUS = 1002
+ID_OPEN_WEB = 1003
 
 
 def _load_default_icon() -> int:
@@ -148,6 +149,8 @@ class SystemTray:
                 ID_STATUS, "EzWinCommand Agent",
             )
             win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
+            win32gui.AppendMenu(menu, win32con.MF_STRING, ID_OPEN_WEB, "打开 Web 管理(&O)")
+            win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
             win32gui.AppendMenu(menu, win32con.MF_STRING, ID_EXIT, "退出(&X)")
 
             pos = win32gui.GetCursorPos()
@@ -176,11 +179,20 @@ class SystemTray:
 
     def _handle_msg(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         if msg == WM_TRAY:
+            # 双击托盘图标 → 打开 Web 管理面板
+            if lparam == win32con.WM_LBUTTONDBLCLK:
+                import os
+                os.startfile("http://127.0.0.1:8080")
+                return 0
             if lparam == win32con.WM_RBUTTONUP:
                 self._show_menu()
             return 0
 
         if msg == win32con.WM_COMMAND:
+            if wparam == ID_OPEN_WEB:
+                import os
+                os.startfile("http://127.0.0.1:8080")
+                return 0
             if wparam == ID_EXIT:
                 self._delete_tray()
                 win32gui.PostQuitMessage(0)

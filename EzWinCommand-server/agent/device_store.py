@@ -130,3 +130,19 @@ class DeviceStore:
             devices 字典非空时返回 True。
         """
         return len(self._data["devices"]) > 0
+
+    def rename_device(self, key: str, name: str) -> bool:
+        """重命名已配对设备。
+
+        Args:
+            key: 设备 UUID 密钥。
+            name: 新的设备名称。
+
+        Returns:
+            设备存在并重命名成功时返回 True，设备不存在返回 False。
+        """
+        if key not in self._data["devices"]:
+            return False
+        self._data["devices"][key]["name"] = name
+        self._save()
+        return True

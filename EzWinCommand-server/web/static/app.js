@@ -1,11 +1,23 @@
 // ============================================================
-// EzWinCommand Web UI — 双模式：配对页 / 控制面板
+// EzWinCommand Web UI — 双模式：PC 管理面板 / 外部页面
 // ============================================================
 
 const DEVICE_KEY_STORAGE = "ez_device_key";
-const POLL_INTERVAL = 3000; // 配对页轮询间隔（毫秒）
+const PC_CODE_POLL_MS = 3000;   // PC 端配对码服务器轮询间隔
+const EXT_POLL_MS = 3000;        // 外部页面配对码轮询间隔
+const COUNTDOWN_TICK_MS = 1000;  // 倒计时每秒更新
+const STATUS_POLL_MS = 5000;     // 系统状态轮询间隔
+const DEVICE_POLL_MS = 30000;    // 设备列表轮询间隔
 
-// ---- 工具函数 ----
+// ============================================================
+// 工具函数
+// ============================================================
+
+/** 判断是否为 PC 端（localhost 访问） */
+function isPC() {
+    const hostname = location.hostname;
+    return hostname === "127.0.0.1" || hostname === "::1" || hostname === "localhost";
+}
 
 /** 获取当前已存储的设备密钥 */
 function storedKey() {
@@ -17,7 +29,7 @@ function authHeaders(extra = {}) {
     const key = storedKey();
     const headers = { ...extra };
     if (key) {
-        headers["Authorization"] = `Bearer ${key}`;
+        headers["Authorization"] = "Bearer " + key;
     }
     return headers;
 }
@@ -28,73 +40,445 @@ async function authFetch(url, options = {}) {
     return fetch(url, { ...options, headers });
 }
 
-// ---- 页面切换 ----
+// ============================================================
+// PC 管理面板
+// ============================================================
 
-/** 显示配对页，隐藏控制面板 */
-function showPairingPage() {
-    document.getElementById("pairing-page").style.display = "";
-    document.getElementById("dashboard").style.display = "none";
-}
+let pcCountdownTimer = null;   // 倒计时定时器 ID
+let pcCountdownRemain = 0;     // 剩余秒数
+let pcPollTimer = null;        // 服务器轮询定时器 ID
 
-/** 显示控制面板，隐藏配对页 */
-function showDashboard() {
-    document.getElementById("pairing-page").style.display = "none";
-    document.getElementById("dashboard").style.display = "";
-    // 首次进入控制面板时加载数据
-    loadStatus();
-    loadActions();
-    loadDevices();
-    setInterval(loadStatus, 5000);
-    setInterval(loadDevices, 30000); // 每 30 秒刷新设备列表
-}
-
-// ---- 配对页逻辑 ----
-
-let pairingPollTimer = null;
-
-/** 停止配对码轮询 */
-function stopPairingPoll() {
-    if (pairingPollTimer) {
-        clearInterval(pairingPollTimer);
-        pairingPollTimer = null;
-    }
-}
-
-/** 更新配对码显示 */
-async function refreshPairingCode() {
+/** 获取当前配对码信息 */
+async function pcFetchPairingCode() {
     try {
         const resp = await fetch("/api/pairing-code");
-        const data = await resp.json();
-        return data;
+        if (!resp.ok) return null;
+        return await resp.json();
     } catch {
         return null;
     }
 }
 
-/** 轮询配对码 — 配对页启动后周期性检查 */
-async function pollPairingCode() {
-    const data = await refreshPairingCode();
-    if (!data) return;
+/** 刷新（生成）配对码 */
+async function pcRefreshPairingCode() {
+    try {
+        const resp = await fetch("/api/pairing-code/refresh", { method: "POST" });
+        if (!resp.ok) return null;
+        return await resp.json(); // { code: "xxxx", expires_in: 300 }
+    } catch {
+        return null;
+    }
+}
 
-    if (data.code) {
-        document.getElementById("pairing-code").textContent = data.code;
+/** 显示配对码区域（有码状态） */
+function pcShowPairingActive(code) {
+    document.getElementById("pc-pairing-empty").style.display = "none";
+    document.getElementById("pc-pairing-active").style.display = "";
+    document.getElementById("pc-pairing-code").textContent = code;
+}
+
+/** 显示配对码区域（无码状态） */
+function pcShowPairingEmpty() {
+    document.getElementById("pc-pairing-empty").style.display = "";
+    document.getElementById("pc-pairing-active").style.display = "none";
+    document.getElementById("pc-pairing-code").textContent = "";
+    document.getElementById("pc-countdown").textContent = "05:00";
+}
+
+/** 格式化秒数为 MM:SS */
+function pcFormatCountdown(seconds) {
+    const m = Math.floor(Math.max(0, seconds) / 60);
+    const s = Math.max(0, seconds) % 60;
+    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+}
+
+/** 启动倒计时 */
+function pcStartCountdown(seconds) {
+    pcStopCountdown();
+    pcCountdownRemain = seconds;
+    document.getElementById("pc-countdown").textContent = pcFormatCountdown(seconds);
+
+    pcCountdownTimer = setInterval(() => {
+        pcCountdownRemain--;
+        document.getElementById("pc-countdown").textContent = pcFormatCountdown(pcCountdownRemain);
+
+        if (pcCountdownRemain <= 0) {
+            pcStopCountdown();
+            pcStopPolling();
+            pcShowPairingEmpty();
+        }
+    }, COUNTDOWN_TICK_MS);
+}
+
+/** 停止倒计时 */
+function pcStopCountdown() {
+    if (pcCountdownTimer) {
+        clearInterval(pcCountdownTimer);
+        pcCountdownTimer = null;
+    }
+    pcCountdownRemain = 0;
+}
+
+/** 启动服务器轮询（同步过期状态） */
+function pcStartPolling() {
+    pcStopPolling();
+    pcPollTimer = setInterval(async () => {
+        const data = await pcFetchPairingCode();
+        if (!data || !data.code) {
+            // 服务器端已过期或无码
+            pcStopCountdown();
+            pcStopPolling();
+            pcShowPairingEmpty();
+        }
+    }, PC_CODE_POLL_MS);
+}
+
+/** 停止服务器轮询 */
+function pcStopPolling() {
+    if (pcPollTimer) {
+        clearInterval(pcPollTimer);
+        pcPollTimer = null;
+    }
+}
+
+/** 处理「生成配对码」按钮 */
+async function pcHandleGenerate() {
+    const btn = document.getElementById("pc-generate-btn");
+    btn.disabled = true;
+    btn.textContent = "生成中…";
+
+    const data = await pcRefreshPairingCode();
+    btn.disabled = false;
+    btn.textContent = "生成配对码";
+
+    if (data && data.code) {
+        pcShowPairingActive(data.code);
+        const expiresIn = data.expires_in || 300;
+        pcStartCountdown(expiresIn);
+        pcStartPolling();
+    }
+}
+
+/** 处理「刷新」按钮 */
+async function pcHandleRefresh() {
+    const btn = document.getElementById("pc-refresh-btn");
+    btn.disabled = true;
+    btn.textContent = "刷新中…";
+
+    const data = await pcRefreshPairingCode();
+    btn.disabled = false;
+    btn.textContent = "刷新";
+
+    if (data && data.code) {
+        document.getElementById("pc-pairing-code").textContent = data.code;
+        const expiresIn = data.expires_in || 300;
+        pcStartCountdown(expiresIn);
+    }
+}
+
+// ---- PC 设备管理 ----
+
+/** 加载设备列表（PC 端，无需鉴权） */
+async function pcLoadDevices() {
+    try {
+        const resp = await fetch("/api/devices");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const tbody = document.getElementById("pc-device-tbody");
+        const emptyEl = document.getElementById("pc-device-empty");
+        tbody.innerHTML = "";
+
+        const devices = data.devices || [];
+        if (devices.length === 0) {
+            emptyEl.style.display = "";
+            return;
+        }
+        emptyEl.style.display = "none";
+
+        for (const dev of devices) {
+            const tr = document.createElement("tr");
+
+            // 设备名（可点击编辑）
+            const tdName = document.createElement("td");
+            tdName.className = "device-name-cell";
+            const nameSpan = document.createElement("span");
+            nameSpan.textContent = dev.name;
+            nameSpan.className = "device-name-text";
+            nameSpan.title = "点击编辑名称";
+            nameSpan.addEventListener("click", () => pcStartRename(dev.key, dev.name, nameSpan));
+            tdName.appendChild(nameSpan);
+            tr.appendChild(tdName);
+
+            // 最后活跃
+            const tdLastSeen = document.createElement("td");
+            tdLastSeen.textContent = formatTime(dev.last_seen);
+            tr.appendChild(tdLastSeen);
+
+            // 操作
+            const tdAction = document.createElement("td");
+            const revokeBtn = document.createElement("button");
+            revokeBtn.className = "revoke-btn";
+            revokeBtn.textContent = "撤销";
+            revokeBtn.addEventListener("click", () => pcRevokeDevice(dev.key, tr));
+            tdAction.appendChild(revokeBtn);
+            tr.appendChild(tdAction);
+
+            tbody.appendChild(tr);
+        }
+    } catch {
+        // 忽略
+    }
+}
+
+/** 开始重命名：将 span 替换为 input */
+function pcStartRename(key, currentName, spanEl) {
+    // 如果已有编辑中的 input，先取消
+    const existing = document.querySelector(".device-name-input");
+    if (existing) {
+        pcCancelRename(existing);
     }
 
-    // 如果另一设备已配对成功（has_devices 变为 true），自动切换
-    if (data.has_devices && storedKey()) {
-        stopPairingPoll();
-        showDashboard();
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "device-name-input";
+    input.value = currentName;
+    input.setAttribute("data-device-key", key);
+    input.setAttribute("data-original-name", currentName);
+
+    spanEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            pcCommitRename(input);
+        } else if (e.key === "Escape") {
+            pcCancelRename(input);
+        }
+    });
+    input.addEventListener("blur", () => {
+        // 延迟执行，让 Enter/Escape 先触发
+        setTimeout(() => {
+            if (document.body.contains(input)) {
+                pcCancelRename(input);
+            }
+        }, 150);
+    });
+}
+
+/** 提交重命名 */
+async function pcCommitRename(inputEl) {
+    const key = inputEl.getAttribute("data-device-key");
+    const newName = inputEl.value.trim();
+    const originalName = inputEl.getAttribute("data-original-name");
+
+    if (!newName || newName === originalName) {
+        pcCancelRename(inputEl);
         return;
     }
 
-    // 如果 has_devices 变为 true 但本地无 key，说明是另一设备配对了，
-    // 此时配对码显示会变为 ----（后端 code 为 null），页面保持在配对页
-    // 用户可以通过页面上的配对码输入区域输入自己的配对码
+    try {
+        const resp = await fetch("/api/devices/" + encodeURIComponent(key), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: newName }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            pcLoadDevices();
+        } else {
+            pcCancelRename(inputEl);
+        }
+    } catch {
+        pcCancelRename(inputEl);
+    }
 }
 
-/** 处理配对码输入焦点跳转 */
+/** 取消重命名，恢复为 span */
+function pcCancelRename(inputEl) {
+    const originalName = inputEl.getAttribute("data-original-name");
+    const span = document.createElement("span");
+    span.textContent = originalName;
+    span.className = "device-name-text";
+    span.title = "点击编辑名称";
+    const key = inputEl.getAttribute("data-device-key");
+    span.addEventListener("click", () => pcStartRename(key, originalName, span));
+    inputEl.replaceWith(span);
+}
+
+/** 撤销设备授权 */
+async function pcRevokeDevice(key, rowEl) {
+    if (!confirm("确定要撤销此设备的授权吗？")) return;
+
+    try {
+        const resp = await fetch("/api/devices/" + encodeURIComponent(key), {
+            method: "DELETE",
+        });
+        const data = await resp.json();
+        if (data.success) {
+            rowEl.remove();
+            const tbody = document.getElementById("pc-device-tbody");
+            if (tbody.children.length === 0) {
+                document.getElementById("pc-device-empty").style.display = "";
+            }
+        }
+    } catch {
+        // 忽略
+    }
+}
+
+// ---- PC 控制面板 ----
+
+/** 加载系统状态（PC 端，无需鉴权） */
+async function pcLoadStatus() {
+    try {
+        const resp = await fetch("/status");
+        const data = await resp.json();
+        document.getElementById("pc-cpu").textContent = data.cpu_percent.toFixed(1);
+        document.getElementById("pc-memory").textContent = data.memory.percent.toFixed(1);
+    } catch {
+        // 忽略
+    }
+}
+
+/** 加载操作按钮（PC 端，无需鉴权） */
+async function pcLoadActions() {
+    try {
+        const resp = await fetch("/api/actions");
+        const data = await resp.json();
+        const container = document.getElementById("pc-actions");
+        container.innerHTML = "";
+
+        for (const plugin of data.actions) {
+            const card = document.createElement("div");
+            card.className = "plugin-card";
+
+            const title = document.createElement("h3");
+            title.textContent = plugin.label;
+            card.appendChild(title);
+
+            if (plugin.sub_actions.length === 0) {
+                const btn = document.createElement("button");
+                btn.textContent = plugin.label;
+                btn.addEventListener("click", () =>
+                    pcSendCommand(plugin.name)
+                );
+                card.appendChild(btn);
+            } else {
+                const group = document.createElement("div");
+                group.className = "btn-group";
+
+                for (const sub of plugin.sub_actions) {
+                    const btn = document.createElement("button");
+                    btn.textContent = sub.label;
+                    btn.addEventListener("click", () =>
+                        pcSendCommand(plugin.name, { sub_action: sub.id })
+                    );
+                    group.appendChild(btn);
+                }
+                card.appendChild(group);
+            }
+
+            container.appendChild(card);
+        }
+    } catch {
+        // 忽略
+    }
+}
+
+/** 发送命令（PC 端，无需鉴权） */
+async function pcSendCommand(action, params = {}) {
+    try {
+        const resp = await fetch("/api/command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, params }),
+        });
+        const result = await resp.json();
+        console.log(action, result);
+    } catch (e) {
+        console.error("命令发送失败:", e);
+    }
+}
+
+/** 初始化 PC 管理面板 */
+async function initPCPanel() {
+    document.getElementById("pc-panel").style.display = "";
+
+    // 绑定按钮事件
+    document.getElementById("pc-generate-btn").addEventListener("click", pcHandleGenerate);
+    document.getElementById("pc-refresh-btn").addEventListener("click", pcHandleRefresh);
+
+    // 加载配对码状态
+    const data = await pcFetchPairingCode();
+    if (data && data.code) {
+        pcShowPairingActive(data.code);
+        // 倒计时：从服务器返回时估算剩余时间（默认 300s）
+        pcStartCountdown(300);
+        pcStartPolling();
+    } else {
+        pcShowPairingEmpty();
+    }
+
+    // 加载设备列表
+    pcLoadDevices();
+    setInterval(pcLoadDevices, DEVICE_POLL_MS);
+
+    // 加载系统状态和操作
+    pcLoadStatus();
+    pcLoadActions();
+    setInterval(pcLoadStatus, STATUS_POLL_MS);
+}
+
+// ============================================================
+// 外部页面
+// ============================================================
+
+let extPollTimer = null;
+
+/** 获取当前配对码信息 */
+async function extFetchPairingCode() {
+    try {
+        const resp = await fetch("/api/pairing-code");
+        if (!resp.ok) return null;
+        return await resp.json();
+    } catch {
+        return null;
+    }
+}
+
+/** 显示配对待机页 */
+function extShowStandby() {
+    document.getElementById("ext-standby").style.display = "";
+    document.getElementById("ext-pairing").style.display = "none";
+    document.getElementById("ext-dashboard").style.display = "none";
+}
+
+/** 显示配对输入页 */
+function extShowPairing() {
+    document.getElementById("ext-standby").style.display = "none";
+    document.getElementById("ext-pairing").style.display = "";
+    document.getElementById("ext-dashboard").style.display = "none";
+}
+
+/** 显示外部控制面板 */
+function extShowDashboard() {
+    document.getElementById("ext-standby").style.display = "none";
+    document.getElementById("ext-pairing").style.display = "none";
+    document.getElementById("ext-dashboard").style.display = "";
+
+    extLoadStatus();
+    extLoadActions();
+    extLoadDevices();
+    setInterval(extLoadStatus, STATUS_POLL_MS);
+    setInterval(extLoadDevices, DEVICE_POLL_MS);
+}
+
+// ---- 外部配对逻辑 ----
+
+/** 处理配对码输入焦点跳转与粘贴 */
 function setupCodeInputs() {
-    const cells = document.querySelectorAll(".code-cell");
+    const cells = document.querySelectorAll("#ext-pairing .code-cell");
     cells.forEach((cell, index) => {
         cell.addEventListener("input", () => {
             const val = cell.value.replace(/[^0-9a-z]/gi, "").toLowerCase();
@@ -108,7 +492,6 @@ function setupCodeInputs() {
                 cells[index - 1].focus();
             }
         });
-        // 粘贴支持：粘贴 4 位码自动填充
         cell.addEventListener("paste", (e) => {
             e.preventDefault();
             const pasted = (e.clipboardData || window.clipboardData).getData("text").trim();
@@ -116,7 +499,6 @@ function setupCodeInputs() {
             for (let i = 0; i < 4; i++) {
                 cells[i].value = cleaned[i] || "";
             }
-            // 焦点跳到最后一个有值的格子或末尾
             const focusIdx = Math.min(cleaned.length, 3);
             cells[focusIdx].focus();
         });
@@ -125,7 +507,7 @@ function setupCodeInputs() {
 
 /** 获取 4 位输入框拼合的配对码 */
 function readPairingCode() {
-    const cells = document.querySelectorAll(".code-cell");
+    const cells = document.querySelectorAll("#ext-pairing .code-cell");
     return Array.from(cells).map(c => c.value).join("");
 }
 
@@ -152,8 +534,8 @@ async function handlePair() {
 
         if (data.success && data.device_key) {
             localStorage.setItem(DEVICE_KEY_STORAGE, data.device_key);
-            stopPairingPoll();
-            showDashboard();
+            extStopPolling();
+            extShowDashboard();
         } else {
             errorEl.textContent = data.message || "配对失败，请重试";
         }
@@ -164,26 +546,45 @@ async function handlePair() {
     }
 }
 
-// ---- 控制面板逻辑 ----
-
-/** 加载系统状态 */
-async function loadStatus() {
-    try {
-        const resp = await authFetch("/status");
-        const data = await resp.json();
-        document.getElementById("cpu").textContent = data.cpu_percent.toFixed(1);
-        document.getElementById("memory").textContent = data.memory.percent.toFixed(1);
-    } catch {
-        // 忽略网络错误，下次轮询会重试
+/** 停止外部轮询 */
+function extStopPolling() {
+    if (extPollTimer) {
+        clearInterval(extPollTimer);
+        extPollTimer = null;
     }
 }
 
-/** 加载操作按钮 */
-async function loadActions() {
+/** 启动配对码轮询（待机页用） */
+function extStartPolling() {
+    extStopPolling();
+    extPollTimer = setInterval(async () => {
+        const data = await extFetchPairingCode();
+        if (data && data.code) {
+            // 配对码出现，切换到配对输入页
+            extStopPolling();
+            extShowPairing();
+        }
+    }, EXT_POLL_MS);
+}
+
+// ---- 外部控制面板 ----
+
+async function extLoadStatus() {
+    try {
+        const resp = await authFetch("/status");
+        const data = await resp.json();
+        document.getElementById("ext-cpu").textContent = data.cpu_percent.toFixed(1);
+        document.getElementById("ext-memory").textContent = data.memory.percent.toFixed(1);
+    } catch {
+        // 忽略
+    }
+}
+
+async function extLoadActions() {
     try {
         const resp = await authFetch("/api/actions");
         const data = await resp.json();
-        const container = document.getElementById("actions");
+        const container = document.getElementById("ext-actions");
         container.innerHTML = "";
 
         for (const plugin of data.actions) {
@@ -198,7 +599,7 @@ async function loadActions() {
                 const btn = document.createElement("button");
                 btn.textContent = plugin.label;
                 btn.addEventListener("click", () =>
-                    sendCommand(plugin.name)
+                    extSendCommand(plugin.name)
                 );
                 card.appendChild(btn);
             } else {
@@ -209,7 +610,7 @@ async function loadActions() {
                     const btn = document.createElement("button");
                     btn.textContent = sub.label;
                     btn.addEventListener("click", () =>
-                        sendCommand(plugin.name, { sub_action: sub.id })
+                        extSendCommand(plugin.name, { sub_action: sub.id })
                     );
                     group.appendChild(btn);
                 }
@@ -223,8 +624,7 @@ async function loadActions() {
     }
 }
 
-/** 发送命令 */
-async function sendCommand(action, params = {}) {
+async function extSendCommand(action, params = {}) {
     try {
         const resp = await authFetch("/api/command", {
             method: "POST",
@@ -238,15 +638,14 @@ async function sendCommand(action, params = {}) {
     }
 }
 
-// ---- 设备管理 ----
+// ---- 外部设备管理 ----
 
-/** 加载设备列表 */
-async function loadDevices() {
+async function extLoadDevices() {
     try {
         const resp = await authFetch("/api/devices");
         const data = await resp.json();
-        const tbody = document.getElementById("device-tbody");
-        const emptyEl = document.getElementById("device-empty");
+        const tbody = document.getElementById("ext-device-tbody");
+        const emptyEl = document.getElementById("ext-device-empty");
         tbody.innerHTML = "";
 
         const devices = data.devices || [];
@@ -275,7 +674,7 @@ async function loadDevices() {
             const revokeBtn = document.createElement("button");
             revokeBtn.className = "revoke-btn";
             revokeBtn.textContent = "撤销";
-            revokeBtn.addEventListener("click", () => revokeDevice(dev.key, tr));
+            revokeBtn.addEventListener("click", () => extRevokeDevice(dev.key, tr));
             tdAction.appendChild(revokeBtn);
             tr.appendChild(tdAction);
 
@@ -285,6 +684,63 @@ async function loadDevices() {
         // 忽略
     }
 }
+
+async function extRevokeDevice(key, rowEl) {
+    if (!confirm("确定要撤销此设备的授权吗？")) return;
+
+    try {
+        const resp = await authFetch("/api/devices/" + encodeURIComponent(key), {
+            method: "DELETE",
+        });
+        const data = await resp.json();
+        if (data.success) {
+            if (key === storedKey()) {
+                localStorage.removeItem(DEVICE_KEY_STORAGE);
+                location.reload();
+            } else {
+                rowEl.remove();
+                const tbody = document.getElementById("ext-device-tbody");
+                if (tbody.children.length === 0) {
+                    document.getElementById("ext-device-empty").style.display = "";
+                }
+            }
+        }
+    } catch {
+        // 忽略
+    }
+}
+
+// ---- 外部页面初始化 ----
+
+async function initExternal() {
+    document.getElementById("external-page").style.display = "";
+
+    // 情况 1：本地有 device_key → 直接进入控制面板
+    if (storedKey()) {
+        extShowDashboard();
+        return;
+    }
+
+    // 情况 2：无本地 key，检查是否有配对码
+    const data = await extFetchPairingCode();
+
+    if (data && data.code) {
+        // 有配对码 → 显示配对输入页
+        extShowPairing();
+    } else {
+        // 无配对码 → 显示待机页，启动轮询
+        extShowStandby();
+        extStartPolling();
+    }
+
+    // 绑定配对页事件
+    setupCodeInputs();
+    document.getElementById("pair-btn").addEventListener("click", handlePair);
+}
+
+// ============================================================
+// 通用工具
+// ============================================================
 
 /** 格式化 ISO 时间戳为可读时间 */
 function formatTime(iso) {
@@ -303,70 +759,18 @@ function formatTime(iso) {
     }
 }
 
-/** 撤销设备授权 */
-async function revokeDevice(key, rowEl) {
-    if (!confirm("确定要撤销此设备的授权吗？")) return;
-
-    try {
-        const resp = await authFetch(`/api/devices/${encodeURIComponent(key)}`, {
-            method: "DELETE",
-        });
-        const data = await resp.json();
-        if (data.success) {
-            // 如果撤销的是自己，清除本地存储并回到配对页
-            if (key === storedKey()) {
-                localStorage.removeItem(DEVICE_KEY_STORAGE);
-                // 刷新页面回到初始状态
-                location.reload();
-            } else {
-                rowEl.remove();
-                // 检查是否还有设备
-                const tbody = document.getElementById("device-tbody");
-                if (tbody.children.length === 0) {
-                    document.getElementById("device-empty").style.display = "";
-                }
-            }
-        }
-    } catch {
-        // 忽略
-    }
-}
-
-// ---- 初始化 ----
+// ============================================================
+// 入口
+// ============================================================
 
 async function init() {
-    // 先检查配对状态
-    try {
-        const data = await refreshPairingCode();
-
-        // 情况 1：本地有 device_key → 直接进入控制面板
-        if (storedKey()) {
-            showDashboard();
-            return;
-        }
-
-        // 情况 2：无本地 key，显示配对页
-        showPairingPage();
-        setupCodeInputs();
-        document.getElementById("pair-btn").addEventListener("click", handlePair);
-
-        // 首次刷新配对码显示
-        if (data && data.code) {
-            document.getElementById("pairing-code").textContent = data.code;
-        }
-
-        // 启动轮询
-        pairingPollTimer = setInterval(pollPairingCode, POLL_INTERVAL);
-    } catch {
-        // 网络不可达时仍然显示配对页，让用户稍后重试
-        showPairingPage();
-        setupCodeInputs();
-        document.getElementById("pair-btn").addEventListener("click", handlePair);
-        pairingPollTimer = setInterval(pollPairingCode, POLL_INTERVAL);
+    if (isPC()) {
+        await initPCPanel();
+    } else {
+        await initExternal();
     }
 }
 
-// 页面加载完成后初始化
 if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
 } else {

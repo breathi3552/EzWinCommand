@@ -37,12 +37,9 @@ class AuthManager:
         """
         self._store = store
         self._pairing_code: Optional[str] = None
+        self._code_expires_at: float = 0.0
         self._failed_attempts: int = 0
         self._lock_until: float = 0.0
-
-        # 无设备时自动生成配对码
-        if not store.has_any_device():
-            self._generate_code()
 
     # ---- 配对码管理 ----
 
@@ -50,20 +47,25 @@ class AuthManager:
         """从 0-9a-z 字符集中随机生成 4 位配对码。
 
         使用 secrets 模块以保证加密安全性。
-        同时重置失败计数和锁定状态。
+        同时重置失败计数和锁定状态，设置 5 分钟过期时间。
         """
         self._pairing_code = "".join(
             secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH)
         )
         self._failed_attempts = 0
         self._lock_until = 0.0
+        self._code_expires_at = time.time() + 300
 
     def get_pairing_code(self) -> Optional[str]:
         """返回当前配对码。
 
+        若配对码已过期（超过 5 分钟），自动置空。
+
         Returns:
-            当前配对码字符串，若无则返回 None。
+            当前配对码字符串，若无或过期则返回 None。
         """
+        if self._pairing_code is not None and time.time() > self._code_expires_at:
+            self._pairing_code = None
         return self._pairing_code
 
     def generate_new_code(self) -> str:
@@ -81,10 +83,11 @@ class AuthManager:
         """尝试验证配对码并注册设备。
 
         验证逻辑：
-        1. 若当前无配对码 → 返回 None
-        2. 若处于锁定状态（lock_until > 当前时间）→ 返回 None
-        3. 配对码不匹配 → 累加失败计数，达到阈值则锁定 30 秒，返回 None
-        4. 配对码匹配 → 重置状态，invalidate 配对码，调用 store.add_device(name)，返回设备密钥
+        1. 若配对码已过期 → 置空并返回 None
+        2. 若当前无配对码 → 返回 None
+        3. 若处于锁定状态（lock_until > 当前时间）→ 返回 None
+        4. 配对码不匹配 → 累加失败计数，达到阈值则锁定 30 秒，返回 None
+        5. 配对码匹配 → 重置状态，invalidate 配对码，调用 store.add_device(name)，返回设备密钥
 
         Args:
             code: 用户输入的配对码。
@@ -93,6 +96,9 @@ class AuthManager:
         Returns:
             成功时返回设备 UUID 密钥字符串，失败返回 None。
         """
+        # 检查配对码是否过期
+        if self._pairing_code is not None and time.time() > self._code_expires_at:
+            self._pairing_code = None
         if self._pairing_code is None:
             return None
 
@@ -151,6 +157,14 @@ class AuthManager:
         """
         return self._store.remove_device(key)
 
+    def rename_device(self, key: str, name: str) -> bool:
+        """重命名设备。
+
+        Returns:
+            True 表示重命名成功，False 表示设备不存在。
+        """
+        return self._store.rename_device(key, name)
+
 
 # ---- FastAPI 中间件 ----
 
@@ -193,6 +207,12 @@ def create_auth_middleware(auth_manager: AuthManager):
 
             # 白名单路径放行
             if path in _WHITELIST_PATHS:
+                await self._app(scope, receive, send)
+                return
+
+            # localhost 请求放行（PC 管理面板无需 Bearer 鉴权）
+            client_host = (scope.get("client") or ("", 0))[0]
+            if client_host in ("127.0.0.1", "::1", "testclient"):
                 await self._app(scope, receive, send)
                 return
 

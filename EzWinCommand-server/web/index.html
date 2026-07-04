@@ -7,54 +7,109 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <!-- ===== 配对页 ===== -->
-    <div id="pairing-page">
-        <h1>EzWinCommand</h1>
 
-        <div id="pairing-code-section">
-            <p class="pairing-label">配对码</p>
-            <div id="pairing-code">----</div>
-            <p class="pairing-hint">请在另一设备上输入此配对码</p>
-        </div>
+    <!-- ===== PC 管理面板（localhost 访问） ===== -->
+    <div id="pc-panel" style="display:none">
+        <h1>EzWinCommand 管理面板</h1>
 
-        <div id="code-input-area">
-            <p class="pairing-label">输入配对码</p>
-            <div id="code-inputs">
-                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
-                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
-                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
-                <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+        <!-- 配对码区 -->
+        <section id="pc-pairing-area">
+            <!-- 无配对码 -->
+            <div id="pc-pairing-empty">
+                <p class="pc-no-code">暂无配对码</p>
+                <button id="pc-generate-btn" class="pc-generate-btn">生成配对码</button>
             </div>
-            <button id="pair-btn">配 对</button>
-            <p id="pair-error"></p>
-        </div>
-    </div>
+            <!-- 有配对码 -->
+            <div id="pc-pairing-active" style="display:none">
+                <div id="pc-pairing-code"></div>
+                <div id="pc-countdown">05:00</div>
+                <button id="pc-refresh-btn" class="pc-refresh-btn">刷新</button>
+            </div>
+        </section>
 
-    <!-- ===== 控制面板 ===== -->
-    <div id="dashboard" style="display:none">
-        <h1>EzWinCommand</h1>
-        <div id="status">
-            <p>CPU: <span id="cpu">--</span>%</p>
-            <p>内存: <span id="memory">--</span>%</p>
-        </div>
-        <div id="actions"></div>
-
-        <!-- 设备管理 -->
-        <details id="device-manager">
+        <!-- 设备管理区 -->
+        <details id="pc-device-manager">
             <summary>设备管理</summary>
-            <table id="device-table">
+            <table id="pc-device-table">
                 <thead>
                     <tr>
                         <th>设备名</th>
-                        <th>配对时间</th>
                         <th>最后活跃</th>
                         <th>操作</th>
                     </tr>
                 </thead>
-                <tbody id="device-tbody"></tbody>
+                <tbody id="pc-device-tbody"></tbody>
             </table>
-            <p id="device-empty" style="display:none">暂无已配对设备</p>
+            <p id="pc-device-empty" style="display:none">暂无已配对设备</p>
         </details>
+
+        <!-- 控制面板区 -->
+        <section id="pc-control-panel">
+            <div id="pc-status">
+                <p>CPU: <span id="pc-cpu">--</span>%</p>
+                <p>内存: <span id="pc-memory">--</span>%</p>
+            </div>
+            <div id="pc-actions"></div>
+        </section>
+    </div>
+
+    <!-- ===== 外部页面（非 localhost 访问） ===== -->
+    <div id="external-page" style="display:none">
+
+        <!-- 配对待机页（无配对码时） -->
+        <div id="ext-standby">
+            <h1>EzWinCommand</h1>
+            <p class="ext-waiting">等待 PC 端生成配对码…</p>
+        </div>
+
+        <!-- 配对页（有配对码时） -->
+        <div id="ext-pairing" style="display:none">
+            <h1>EzWinCommand</h1>
+
+            <div id="pairing-code-section">
+                <p class="pairing-label">配对码</p>
+                <div id="pairing-code">----</div>
+                <p class="pairing-hint">请在另一设备上输入此配对码</p>
+            </div>
+
+            <div id="code-input-area">
+                <p class="pairing-label">输入配对码</p>
+                <div id="code-inputs">
+                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
+                </div>
+                <button id="pair-btn">配 对</button>
+                <p id="pair-error"></p>
+            </div>
+        </div>
+
+        <!-- 外部控制面板（配对后） -->
+        <div id="ext-dashboard" style="display:none">
+            <h1>EzWinCommand</h1>
+            <div id="ext-status">
+                <p>CPU: <span id="ext-cpu">--</span>%</p>
+                <p>内存: <span id="ext-memory">--</span>%</p>
+            </div>
+            <div id="ext-actions"></div>
+
+            <details id="ext-device-manager">
+                <summary>设备管理</summary>
+                <table id="ext-device-table">
+                    <thead>
+                        <tr>
+                            <th>设备名</th>
+                            <th>配对时间</th>
+                            <th>最后活跃</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ext-device-tbody"></tbody>
+                </table>
+                <p id="ext-device-empty" style="display:none">暂无已配对设备</p>
+            </details>
+        </div>
     </div>
 
     <script src="/static/app.js"></script>

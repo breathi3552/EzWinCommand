@@ -1,5 +1,6 @@
 /* ============================================================
    EzWinCommand Web UI — 移动端优先，深色主题
+   PC 管理面板 + 外部页面双模式
    ============================================================ */
 
 * {
@@ -24,9 +25,256 @@ h1 {
     color: #fff;
 }
 
-/* ===== 配对页 ===== */
+/* ============================================================
+   PC 管理面板
+   ============================================================ */
 
-#pairing-page {
+#pc-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+/* ---- 配对码区 ---- */
+
+#pc-pairing-area {
+    background: #16213e;
+    border-radius: 14px;
+    padding: 28px 20px;
+    text-align: center;
+    border: 1px solid #2a2a4a;
+}
+
+.pc-no-code {
+    font-size: 1rem;
+    color: #666;
+    margin-bottom: 20px;
+}
+
+.pc-generate-btn {
+    padding: 14px 36px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    background: linear-gradient(135deg, #0f3460, #1a5a9a);
+    color: #fff;
+    letter-spacing: 0.1em;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.pc-generate-btn:hover {
+    background: linear-gradient(135deg, #1a4a8a, #2670b0);
+}
+
+.pc-generate-btn:active {
+    transform: scale(0.97);
+}
+
+.pc-generate-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* 配对码大号显示 */
+#pc-pairing-code {
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 56px;
+    font-weight: 700;
+    letter-spacing: 12px;
+    color: #4fc3f7;
+    background: #0d1b3e;
+    border-radius: 14px;
+    padding: 16px 24px;
+    user-select: all;
+    cursor: pointer;
+    border: 2px solid #4fc3f7;
+    text-shadow: 0 0 20px rgba(79, 195, 247, 0.4);
+    display: inline-block;
+    margin-bottom: 16px;
+}
+
+/* 倒计时 */
+#pc-countdown {
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 1.4rem;
+    color: #ffb74d;
+    margin-bottom: 16px;
+    font-weight: 600;
+}
+
+/* 刷新按钮 */
+.pc-refresh-btn {
+    padding: 6px 20px;
+    font-size: 0.85rem;
+    border: 1px solid #4fc3f7;
+    border-radius: 8px;
+    cursor: pointer;
+    background: transparent;
+    color: #4fc3f7;
+    transition: background 0.2s;
+    display: block;
+    margin: 0 auto;
+}
+
+.pc-refresh-btn:hover {
+    background: rgba(79, 195, 247, 0.15);
+}
+
+.pc-refresh-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ---- PC 设备管理 ---- */
+
+#pc-device-manager {
+    border-top: 1px solid #333;
+    padding-top: 16px;
+}
+
+#pc-device-manager summary {
+    font-size: 0.95rem;
+    color: #8888aa;
+    cursor: pointer;
+    padding: 8px 0;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+#pc-device-manager summary:hover {
+    color: #ccc;
+}
+
+#pc-device-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 0.8rem;
+}
+
+#pc-device-table th {
+    text-align: left;
+    color: #666;
+    font-weight: 500;
+    padding: 8px 4px;
+    border-bottom: 1px solid #333;
+    white-space: nowrap;
+}
+
+#pc-device-table td {
+    padding: 8px 4px;
+    border-bottom: 1px solid #222;
+    vertical-align: middle;
+}
+
+#pc-device-table td:last-child {
+    text-align: center;
+}
+
+#pc-device-table tbody tr:hover {
+    background: #0d1b3e;
+}
+
+#pc-device-empty {
+    text-align: center;
+    color: #555;
+    font-size: 0.85rem;
+    margin-top: 12px;
+}
+
+/* 设备名可编辑 */
+.device-name-text {
+    cursor: pointer;
+    border-bottom: 1px dashed #555;
+    padding: 2px 0;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.device-name-text:hover {
+    color: #4fc3f7;
+    border-bottom-color: #4fc3f7;
+}
+
+.device-name-input {
+    font-family: inherit;
+    font-size: 0.8rem;
+    background: #0d1b3e;
+    border: 1px solid #4fc3f7;
+    border-radius: 4px;
+    color: #e0e0e0;
+    padding: 3px 6px;
+    width: 100%;
+    max-width: 130px;
+    outline: none;
+}
+
+/* ---- PC 控制面板 ---- */
+
+#pc-status {
+    background: #16213e;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 24px;
+    display: flex;
+    justify-content: space-around;
+}
+
+#pc-status p {
+    font-size: 0.9rem;
+    color: #a0a0b0;
+}
+
+#pc-status span {
+    font-size: 1.3rem;
+    font-weight: bold;
+    color: #4fc3f7;
+    margin-left: 6px;
+}
+
+#pc-actions {
+    display: flex;
+    flex-direction: column;
+}
+
+/* ============================================================
+   外部页面
+   ============================================================ */
+
+#external-page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* ---- 配对待机页 ---- */
+
+#ext-standby {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    text-align: center;
+}
+
+.ext-waiting {
+    font-size: 1.05rem;
+    color: #666;
+    margin-top: 16px;
+    animation: pulse-text 2s ease-in-out infinite;
+}
+
+@keyframes pulse-text {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+/* ---- 配对页（复用并扩展原有样式） ---- */
+
+#ext-pairing {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -95,7 +343,11 @@ h1 {
     border: 2px solid #334;
     border-radius: 12px;
     color: #e0e0e0;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
 
+.code-cell:focus {
     border-color: #4fc3f7;
     box-shadow: 0 0 12px rgba(79, 195, 247, 0.3);
 }
@@ -135,9 +387,13 @@ h1 {
     min-height: 1.2em;
 }
 
-/* ===== 控制面板 ===== */
+/* ---- 外部控制面板 ---- */
 
-#status {
+#ext-dashboard {
+    width: 100%;
+}
+
+#ext-status {
     background: #16213e;
     border-radius: 12px;
     padding: 16px;
@@ -146,22 +402,84 @@ h1 {
     justify-content: space-around;
 }
 
-#status p {
+#ext-status p {
     font-size: 0.9rem;
     color: #a0a0b0;
 }
 
-#status span {
+#ext-status span {
     font-size: 1.3rem;
     font-weight: bold;
     color: #4fc3f7;
     margin-left: 6px;
 }
 
-#actions {
+#ext-actions {
     display: flex;
     flex-direction: column;
 }
+
+/* ---- 外部设备管理 ---- */
+
+#ext-device-manager {
+    margin-top: 32px;
+    border-top: 1px solid #333;
+    padding-top: 16px;
+}
+
+#ext-device-manager summary {
+    font-size: 0.95rem;
+    color: #8888aa;
+    cursor: pointer;
+    padding: 8px 0;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+#ext-device-manager summary:hover {
+    color: #ccc;
+}
+
+#ext-device-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 0.8rem;
+}
+
+#ext-device-table th {
+    text-align: left;
+    color: #666;
+    font-weight: 500;
+    padding: 8px 4px;
+    border-bottom: 1px solid #333;
+    white-space: nowrap;
+}
+
+#ext-device-table td {
+    padding: 8px 4px;
+    border-bottom: 1px solid #222;
+    vertical-align: middle;
+}
+
+#ext-device-table td:last-child {
+    text-align: center;
+}
+
+#ext-device-table tbody tr:hover {
+    background: #0d1b3e;
+}
+
+#ext-device-empty {
+    text-align: center;
+    color: #555;
+    font-size: 0.85rem;
+    margin-top: 12px;
+}
+
+/* ============================================================
+   共享组件样式
+   ============================================================ */
 
 .plugin-card {
     border: 1px solid #444;
@@ -201,57 +519,6 @@ button:active {
     background: #0a2550;
 }
 
-/* ===== 设备管理面板 ===== */
-
-#device-manager {
-    margin-top: 32px;
-    border-top: 1px solid #333;
-    padding-top: 16px;
-}
-
-#device-manager summary {
-    font-size: 0.95rem;
-    color: #8888aa;
-    cursor: pointer;
-    padding: 8px 0;
-    user-select: none;
-    transition: color 0.2s;
-}
-
-#device-manager summary:hover {
-    color: #ccc;
-}
-
-#device-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 12px;
-    font-size: 0.8rem;
-}
-
-#device-table th {
-    text-align: left;
-    color: #666;
-    font-weight: 500;
-    padding: 8px 4px;
-    border-bottom: 1px solid #333;
-    white-space: nowrap;
-}
-
-#device-table td {
-    padding: 8px 4px;
-    border-bottom: 1px solid #222;
-    vertical-align: middle;
-}
-
-#device-table td:last-child {
-    text-align: center;
-}
-
-#device-table tbody tr:hover {
-    background: #0d1b3e;
-}
-
 .revoke-btn {
     padding: 4px 12px;
     font-size: 0.75rem;
@@ -263,16 +530,12 @@ button:active {
     background: #8a2a2a;
 }
 
-#device-empty {
-    text-align: center;
-    color: #555;
-    font-size: 0.85rem;
-    margin-top: 12px;
-}
-
-/* ===== 移动端适配 ===== */
+/* ============================================================
+   移动端适配
+   ============================================================ */
 
 @media (max-width: 360px) {
+    #pc-pairing-code,
     #pairing-code {
         font-size: 40px;
         letter-spacing: 8px;
@@ -289,8 +552,10 @@ button:active {
         gap: 8px;
     }
 
-    #device-table th,
-    #device-table td {
+    #pc-device-table th,
+    #pc-device-table td,
+    #ext-device-table th,
+    #ext-device-table td {
         font-size: 0.7rem;
         padding: 6px 2px;
     }

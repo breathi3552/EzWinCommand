@@ -45,11 +45,6 @@ auth_manager = AuthManager(device_store)
 app.state.auth_manager = auth_manager
 app.add_middleware(create_auth_middleware(auth_manager))
 
-pairing_code = auth_manager.get_pairing_code()
-if pairing_code:
-    logger.info("配对码: %s（无已配对设备时有效）", pairing_code)
-else:
-    logger.info("已有 %d 台配对设备，配对码已禁用", len(auth_manager.list_devices()))
 
 
 def main() -> None:
