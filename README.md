@@ -98,91 +98,29 @@ EzWinCommand-server/start_daemon.pyw
 - 非 localhost 页面不会回显真实配对码。
 - 已配对设备保存在本机运行时文件 `EzWinCommand-server/agent/devices.json`，该文件不提交。
 
-## 手机打不开时怎么查
+## 手机无法访问时
 
-优先检查以下项：
+先确认：
 
-1. PC 本机是否可访问：
-   ```text
-   http://localhost:<PORT>/ping
-   ```
-   应返回：
-   ```json
-   {"status":"ok"}
-   ```
-2. 手机和 PC 是否在同一局域网。
-3. `config.local.env` 中是否为：
-   ```env
-   HOST=0.0.0.0
-   ```
-4. Windows 防火墙是否允许当前端口。
+1. PC 本机可访问 `http://localhost:<PORT>/ping`，并返回 `{"status":"ok"}`。
+2. 手机和 PC 在同一局域网。
+3. `config.local.env` 中保持 `HOST=0.0.0.0`。
+4. 防火墙已放行当前端口。
 
-防火墙规则名格式：
-
-```text
-EzWinCommand <PORT>
-```
-
-普通权限启动时，程序会尝试弹出 UAC 来同步防火墙规则。若你拒绝 UAC，手机端可能打不开。
-
-可用管理员脚本启动一次：
+普通权限启动时，程序会尝试弹出 UAC 同步防火墙规则。若手机仍打不开，可双击根目录脚本：
 
 ```text
 run-admin.bat
-```
-
-或静默管理员启动：
-
-```text
 run-admin_no_console.bat
 ```
 
-手动检查规则：
-
-```bat
-netsh advfirewall firewall show rule name="EzWinCommand 9090"
-```
-
-手动添加规则：
+仍不行时，以管理员身份手动放行端口：
 
 ```bat
 netsh advfirewall firewall add rule name="EzWinCommand 9090" dir=in action=allow protocol=tcp localport=9090 profile=any enable=yes
 ```
 
 把 `9090` 换成你的实际端口。
-
-## API 概览
-
-公开端点：
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `GET` | `/ping` | 健康检查 |
-| `GET` | `/api/pairing-code` | 配对码状态；仅 localhost 响应包含真实 `code` |
-| `POST` | `/api/authorize` | 提交配对码和设备名，获取设备 Key |
-| `POST` | `/api/pairing-code/refresh` | 刷新配对码，仅 localhost 可用 |
-
-鉴权端点：
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `GET` | `/api/status` | CPU / 内存状态快照 |
-| `GET` | `/api/actions` | 列出可用插件操作 |
-| `POST` | `/api/command` | 执行命令 |
-| `GET` | `/api/devices` | 已配对设备列表 |
-| `PATCH` | `/api/devices/{device_key}` | 重命名设备 |
-| `DELETE` | `/api/devices/{device_key}` | 移除设备 |
-
-命令示例：
-
-```json
-{
-  "action": "player",
-  "params": {
-    "sub_action": "play_pause"
-  }
-}
-```
 
 ## 项目结构
 
