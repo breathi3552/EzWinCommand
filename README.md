@@ -51,7 +51,6 @@ EzWinCommand 是一个面向 Windows 的本地自动化控制台：在 PC 上运
 │   ├── config.py              # HOST / PORT / 环境变量配置
 │   ├── start_daemon.pyw       # 无控制台静默启动器
 │   ├── startup.py             # 注册表 Run 键开机自启动管理
-│   ├── install-startup.bat    # 开机自启动安装脚本
 │   ├── requirements.txt       # Python 依赖
 │   ├── agent/
 │   │   ├── api.py             # REST API 路由
@@ -68,8 +67,11 @@ EzWinCommand 是一个面向 Windows 的本地自动化控制台：在 PC 上运
 │   └── web/
 │       ├── index.html         # Web UI 页面
 │       └── static/            # 前端脚本与样式
-├── EzWinCommand-client/       # 客户端预留目录
-└── plan.md                    # 项目 README
+├── install-startup.bat        # 注册开机自启动
+├── uninstall-startup.bat      # 注销开机自启动
+├── run-admin.bat              # 管理员启动（保留控制台）
+├── run-admin_no_console.bat   # 管理员静默启动
+└── README.md                  # 项目说明
 ```
 
 ## 运行环境
