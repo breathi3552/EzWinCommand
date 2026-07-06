@@ -283,19 +283,24 @@ EzWinCommand-server/start_daemon.pyw
 
 该脚本使用 `pythonw.exe` 启动 `app.py`，不显示控制台窗口。
 
+需要管理员权限同步防火墙时，也可以双击仓库根目录：
+
+```text
+run-admin.bat
+```
+
 ### 开机自启动
 
 注册：
 
 ```bash
-cd EzWinCommand-server
-python app.py --install
+python EzWinCommand-server/app.py --install
 ```
 
 注销：
 
 ```bash
-python app.py --uninstall
+python EzWinCommand-server/app.py --uninstall
 ```
 
 实现方式：写入当前用户注册表 Run 键：
@@ -304,10 +309,11 @@ python app.py --uninstall
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run\EzWinCommandAgent
 ```
 
-也可以运行：
+也可以双击仓库根目录脚本：
 
 ```text
-EzWinCommand-server/install-startup.bat
+install-startup.bat
+uninstall-startup.bat
 ```
 
 ### 防火墙规则
