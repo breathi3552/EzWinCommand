@@ -82,11 +82,23 @@ def main() -> None:
         pass
 
 
+def _parse_port_arg(value: str) -> int:
+    """解析 CLI 端口参数，转换为 argparse 可读错误。"""
+    try:
+        return config.parse_port(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="EzWinCommand Agent",
         description="Windows 命令代理服务",
     )
+    parser.add_argument("--host", default=None,
+                        help="监听地址（临时覆盖配置文件，不写回）")
+    parser.add_argument("--port", type=_parse_port_arg, default=None,
+                        help="监听端口（临时覆盖配置文件，不写回）")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--install", action="store_true", help="注册开机自启动")
     group.add_argument("--uninstall", action="store_true", help="注销开机自启动")
@@ -95,6 +107,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
+    # CLI 覆盖必须在任何使用 config.HOST/PORT 之前应用
+    config.override(host=args.host, port=args.port)
     if args.install:
         from startup import install
         install()

@@ -85,7 +85,6 @@ fastapi
 uvicorn[standard]
 psutil
 pywin32
-python-dotenv
 ```
 
 ## 快速开始
@@ -116,15 +115,25 @@ http://localhost:8080
 http://<PC 局域网 IP>:8080
 ```
 
-如需修改监听地址或端口，复制并编辑 `.env`：
-
-```bash
-copy .env.example .env
-```
+如需修改监听地址或端口，编辑 `EzWinCommand-server/config.local.env`
+（首次直接运行会自动创建该文件）：
 
 ```env
 HOST=0.0.0.0
 PORT=8080
+```
+
+临时覆盖（不写回配置文件）：
+
+```bash
+cd EzWinCommand-server
+python app.py --host 0.0.0.0 --port 9090
+```
+
+查看帮助：
+
+```bash
+python app.py --help
 ```
 
 ## 设备配对流程
