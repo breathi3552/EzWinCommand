@@ -8,7 +8,12 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-RULE_NAME = "EzWinCommand 8080"
+RULE_NAME_PREFIX = "EzWinCommand"
+
+
+def _rule_name(port: int) -> str:
+    """按端口生成防火墙规则名。"""
+    return f"{RULE_NAME_PREFIX} {port}"
 
 
 def _run_netsh(args: list[str]) -> tuple[bool, str]:
@@ -47,21 +52,23 @@ def _run_netsh(args: list[str]) -> tuple[bool, str]:
     return result.returncode == 0, output
 
 
-def rule_exists() -> bool:
-    """检查防火墙规则是否已存在。"""
-    ok, output = _run_netsh(["show", "rule", f"name={RULE_NAME}"])
-    return ok and RULE_NAME in output
+def rule_exists(port: int) -> bool:
+    """检查指定端口对应的防火墙规则是否已存在。"""
+    rule_name = _rule_name(port)
+    ok, output = _run_netsh(["show", "rule", f"name={rule_name}"])
+    return ok and rule_name in output and f"{port}" in output
 
 
 def add_rule(port: int) -> bool:
     """添加允许指定端口的入站 TCP 规则。成功返回 True。"""
-    if rule_exists():
-        logger.info("防火墙规则已存在: %s", RULE_NAME)
+    rule_name = _rule_name(port)
+    if rule_exists(port):
+        logger.info("防火墙规则已存在: %s", rule_name)
         return True
 
     ok, output = _run_netsh([
         "add", "rule",
-        f"name={RULE_NAME}",
+        f"name={rule_name}",
         "dir=in",
         "action=allow",
         "protocol=tcp",
@@ -69,7 +76,7 @@ def add_rule(port: int) -> bool:
     ])
 
     if ok:
-        logger.info("已自动添加防火墙规则: %s (端口 %d)", RULE_NAME, port)
+        logger.info("已自动添加防火墙规则: %s (端口 %d)", rule_name, port)
         return True
     else:
         logger.warning("自动添加防火墙规则失败: %s", output)
@@ -77,6 +84,6 @@ def add_rule(port: int) -> bool:
             "请以管理员身份运行本程序，或手动执行：\n"
             "  netsh advfirewall firewall add rule name=\"%s\" "
             "dir=in action=allow protocol=tcp localport=%d",
-            RULE_NAME, port,
+            rule_name, port,
         )
         return False

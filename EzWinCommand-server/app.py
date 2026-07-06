@@ -24,23 +24,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BASE_DIR = Path(__file__).resolve().parent
+
 app = FastAPI(title="EzWinCommand Agent")
 
 # —— 初始化 Dispatcher ——
 dispatcher = Dispatcher()
-dispatcher.discover_plugins("plugins")
+dispatcher.discover_plugins(BASE_DIR / "plugins", package="plugins")
 app.state.dispatcher = dispatcher
 
 # —— 注册 API 路由 ——
 app.include_router(api_router)
 
 # —— 挂载 Web UI ——
-web_dir = Path(__file__).parent / "web"
+web_dir = BASE_DIR / "web"
 if web_dir.is_dir():
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="webui")
 
 # —— 初始化鉴权系统 ——
-device_store = DeviceStore()
+device_store = DeviceStore(BASE_DIR / "agent" / "devices.json")
 auth_manager = AuthManager(device_store)
 app.state.auth_manager = auth_manager
 app.add_middleware(create_auth_middleware(auth_manager))
@@ -61,7 +63,10 @@ def main() -> None:
         logger.info("托盘退出 → 关闭服务")
         server.should_exit = True
 
-    tray = SystemTray(on_exit=_on_tray_exit)
+    tray = SystemTray(
+        on_exit=_on_tray_exit,
+        web_url=f"http://127.0.0.1:{config.PORT}",
+    )
     try:
         tray.start()
     except Exception:

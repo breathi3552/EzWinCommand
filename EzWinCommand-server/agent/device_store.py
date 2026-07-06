@@ -11,10 +11,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+_LAST_SEEN_WRITE_INTERVAL = 30
+
 class DeviceStore:
     """设备持久化存储，管理 devices.json 的读写。"""
 
-    def __init__(self, path: str = "agent/devices.json") -> None:
+    def __init__(self, path: str | Path = "agent/devices.json") -> None:
         """初始化存储。
 
         Args:
@@ -22,16 +24,21 @@ class DeviceStore:
         """
         self._path = Path(path)
         self._data: dict = {"devices": {}}
+        self._last_seen_writes: dict[str, float] = {}
         self._load()
 
     def _load(self) -> None:
         """从磁盘加载设备数据，文件不存在则初始化为空结构。"""
         if self._path.exists():
-            with open(self._path, "r", encoding="utf-8") as f:
-                self._data = json.load(f)
-            # 兼容旧格式：确保 devices 键存在
-            if "devices" not in self._data:
-                self._data["devices"] = {}
+            try:
+                with open(self._path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+            if not isinstance(loaded, dict):
+                loaded = {}
+            devices = loaded.get("devices")
+            self._data = {"devices": devices if isinstance(devices, dict) else {}}
         else:
             # 确保目录存在
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,14 +104,15 @@ class DeviceStore:
         return key in self._data["devices"]
 
     def touch(self, key: str) -> None:
-        """更新设备的 last_seen 时间戳。
-
-        Args:
-            key: 设备 key，不存在时静默忽略。
-        """
+        """更新设备的 last_seen 时间戳，同一设备 30 秒内最多落盘一次。"""
         if key not in self._data["devices"]:
             return
-        self._data["devices"][key]["last_seen"] = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        now_ts = now_dt.timestamp()
+        if now_ts - self._last_seen_writes.get(key, 0.0) < _LAST_SEEN_WRITE_INTERVAL:
+            return
+        self._data["devices"][key]["last_seen"] = now_dt.isoformat()
+        self._last_seen_writes[key] = now_ts
         self._save()
 
     def list_devices(self) -> list[dict]:

@@ -2,6 +2,7 @@
 
 API 不直接执行命令，而是通过 Dispatcher 分发到对应插件。
 """
+from pathlib import Path
 from typing import Any
 
 from plugins.base import CommandResult
@@ -14,9 +15,13 @@ class Dispatcher:
     def __init__(self) -> None:
         self._loader = PluginLoader()
 
-    def discover_plugins(self, plugin_dir: str = "plugins") -> None:
+    def discover_plugins(
+        self,
+        plugin_dir: str | Path = "plugins",
+        package: str = "plugins",
+    ) -> None:
         """扫描并加载插件目录。"""
-        self._loader.discover(plugin_dir)
+        self._loader.discover(plugin_dir, package=package)
 
     def execute(self, action: str, params: dict[str, Any] | None = None) -> CommandResult:
         """分发命令到对应插件。

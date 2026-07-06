@@ -19,7 +19,17 @@ _MAX_FAILED_ATTEMPTS = 5
 _LOCK_DURATION = 30  # 秒
 
 # ---- 鉴权白名单路径 ----
-_WHITELIST_PATHS = frozenset({"/ping", "/api/authorize", "/api/pairing-code"})
+_WHITELIST_PATHS = frozenset({
+    "/ping",
+    "/api/authorize",
+    "/api/pairing-code",
+    "/api/pairing-code/refresh",
+})
+
+
+def is_local_host(host: str) -> bool:
+    """判断 ASGI client host 是否为本机。"""
+    return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost", "testclient"}
 
 
 class AuthManager:
@@ -57,16 +67,21 @@ class AuthManager:
         self._code_expires_at = time.time() + 300
 
     def get_pairing_code(self) -> Optional[str]:
-        """返回当前配对码。
+        """返回当前有效配对码；无配对码或已过期时返回 None。"""
+        self._expire_code_if_needed()
+        return self._pairing_code
 
-        若配对码已过期（超过 5 分钟），自动置空。
+    def get_pairing_code_expires_in(self) -> int:
+        """返回当前配对码剩余有效秒数。"""
+        self._expire_code_if_needed()
+        if self._pairing_code is None:
+            return 0
+        return max(0, int(self._code_expires_at - time.time()))
 
-        Returns:
-            当前配对码字符串，若无或过期则返回 None。
-        """
+    def _expire_code_if_needed(self) -> None:
+        """配对码过期时清空状态。"""
         if self._pairing_code is not None and time.time() > self._code_expires_at:
             self._pairing_code = None
-        return self._pairing_code
 
     def generate_new_code(self) -> str:
         """强制生成新配对码，并重置失败计数和锁定状态。
@@ -96,9 +111,7 @@ class AuthManager:
         Returns:
             成功时返回设备 UUID 密钥字符串，失败返回 None。
         """
-        # 检查配对码是否过期
-        if self._pairing_code is not None and time.time() > self._code_expires_at:
-            self._pairing_code = None
+        self._expire_code_if_needed()
         if self._pairing_code is None:
             return None
 
@@ -173,6 +186,7 @@ def create_auth_middleware(auth_manager: AuthManager):
 
     返回一个可调用的类，供 FastAPI/Starlette 的 add_middleware() 使用。
     白名单路径（/ping, /api/authorize, /api/pairing-code）直接放行；
+    localhost / TestClient 请求直接放行，供 PC 管理面板使用；
     非 /api/ 前缀路径（静态文件）放行；
     其余 /api/* 路径需携带有效的 Authorization: Bearer <key> 头。
 
@@ -212,7 +226,7 @@ def create_auth_middleware(auth_manager: AuthManager):
 
             # localhost 请求放行（PC 管理面板无需 Bearer 鉴权）
             client_host = (scope.get("client") or ("", 0))[0]
-            if client_host in ("127.0.0.1", "::1", "testclient"):
+            if is_local_host(client_host):
                 await self._app(scope, receive, send)
                 return
 

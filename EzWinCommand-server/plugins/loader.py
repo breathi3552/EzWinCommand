@@ -18,8 +18,11 @@ class PluginLoader:
     def __init__(self) -> None:
         self.plugins: dict[str, BasePlugin] = {}
 
-    def discover(self, plugin_dir: str) -> None:
-        """扫描 plugin_dir 目录，加载所有合法插件。"""
+    def discover(self, plugin_dir: str | Path, package: str = "plugins") -> None:
+        """扫描 plugin_dir 目录，加载所有合法插件。
+
+        plugin_dir 可为绝对 Path；package 用于构造 import 路径，避免依赖当前工作目录。
+        """
         root = Path(plugin_dir)
         if not root.is_dir():
             logger.warning("插件目录不存在: %s", root)
@@ -29,7 +32,7 @@ class PluginLoader:
             if py_file.name.startswith("_"):
                 continue  # 跳过 __init__.py 和私有模块
 
-            module_path = f"{plugin_dir}.{py_file.stem}"
+            module_path = f"{package}.{py_file.stem}"
             try:
                 module = importlib.import_module(module_path)
             except Exception:

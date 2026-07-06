@@ -34,10 +34,55 @@ function authHeaders(extra = {}) {
     return headers;
 }
 
+/** 清除当前设备密钥 */
+function clearStoredKey() {
+    localStorage.removeItem(DEVICE_KEY_STORAGE);
+}
+
+/** 显示可见错误信息 */
+function setUiError(elementId, message) {
+    const el = document.getElementById(elementId);
+    if (el) {
+        el.textContent = message || "";
+    }
+}
+
+/** 普通 JSON fetch：检查 HTTP 状态并解析错误消息 */
+async function fetchJson(url, options = {}, errorElementId = null) {
+    const resp = await fetch(url, options);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+        const message = data.message || `请求失败 (${resp.status})`;
+        if (errorElementId) setUiError(errorElementId, message);
+        throw new Error(message);
+    }
+    if (errorElementId) setUiError(errorElementId, "");
+    return data;
+}
+
 /** 带鉴权的 fetch 封装 */
 async function authFetch(url, options = {}) {
     const headers = authHeaders(options.headers || {});
     return fetch(url, { ...options, headers });
+}
+
+/** 带鉴权的 JSON fetch：401/403 时清除本地 key 并回到配对流程 */
+async function authFetchJson(url, options = {}, errorElementId = "ext-error") {
+    const resp = await authFetch(url, options);
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 401 || resp.status === 403) {
+        clearStoredKey();
+        setUiError(errorElementId, "授权已失效，请重新配对");
+        await extReturnToPairing();
+        throw new Error("授权已失效，请重新配对");
+    }
+    if (!resp.ok) {
+        const message = data.message || `请求失败 (${resp.status})`;
+        setUiError(errorElementId, message);
+        throw new Error(message);
+    }
+    setUiError(errorElementId, "");
+    return data;
 }
 
 // ============================================================
@@ -51,9 +96,7 @@ let pcPollTimer = null;        // 服务器轮询定时器 ID
 /** 获取当前配对码信息 */
 async function pcFetchPairingCode() {
     try {
-        const resp = await fetch("/api/pairing-code");
-        if (!resp.ok) return null;
-        return await resp.json();
+        return await fetchJson("/api/pairing-code", {}, "pc-error");
     } catch {
         return null;
     }
@@ -62,9 +105,7 @@ async function pcFetchPairingCode() {
 /** 刷新（生成）配对码 */
 async function pcRefreshPairingCode() {
     try {
-        const resp = await fetch("/api/pairing-code/refresh", { method: "POST" });
-        if (!resp.ok) return null;
-        return await resp.json(); // { code: "xxxx", expires_in: 300 }
+        return await fetchJson("/api/pairing-code/refresh", { method: "POST" }, "pc-error");
     } catch {
         return null;
     }
@@ -181,9 +222,7 @@ async function pcHandleRefresh() {
 /** 加载设备列表（PC 端，无需鉴权） */
 async function pcLoadDevices() {
     try {
-        const resp = await fetch("/api/devices");
-        if (!resp.ok) return;
-        const data = await resp.json();
+        const data = await fetchJson("/api/devices", {}, "pc-error");
         const tbody = document.getElementById("pc-device-tbody");
         const emptyEl = document.getElementById("pc-device-empty");
         tbody.innerHTML = "";
@@ -226,7 +265,7 @@ async function pcLoadDevices() {
             tbody.appendChild(tr);
         }
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
@@ -278,15 +317,15 @@ async function pcCommitRename(inputEl) {
     }
 
     try {
-        const resp = await fetch("/api/devices/" + encodeURIComponent(key), {
+        const data = await fetchJson("/api/devices/" + encodeURIComponent(key), {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name: newName }),
-        });
-        const data = await resp.json();
+        }, "pc-error");
         if (data.success) {
             pcLoadDevices();
         } else {
+            setUiError("pc-error", data.message || "重命名失败");
             pcCancelRename(inputEl);
         }
     } catch {
@@ -311,19 +350,20 @@ async function pcRevokeDevice(key, rowEl) {
     if (!confirm("确定要撤销此设备的授权吗？")) return;
 
     try {
-        const resp = await fetch("/api/devices/" + encodeURIComponent(key), {
+        const data = await fetchJson("/api/devices/" + encodeURIComponent(key), {
             method: "DELETE",
-        });
-        const data = await resp.json();
+        }, "pc-error");
         if (data.success) {
             rowEl.remove();
             const tbody = document.getElementById("pc-device-tbody");
             if (tbody.children.length === 0) {
                 document.getElementById("pc-device-empty").style.display = "";
             }
+        } else {
+            setUiError("pc-error", data.message || "撤销设备失败");
         }
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
@@ -332,20 +372,18 @@ async function pcRevokeDevice(key, rowEl) {
 /** 加载系统状态（PC 端，无需鉴权） */
 async function pcLoadStatus() {
     try {
-        const resp = await fetch("/status");
-        const data = await resp.json();
+        const data = await fetchJson("/api/status", {}, "pc-error");
         document.getElementById("pc-cpu").textContent = data.cpu_percent.toFixed(1);
         document.getElementById("pc-memory").textContent = data.memory.percent.toFixed(1);
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
 /** 加载操作按钮（PC 端，无需鉴权） */
 async function pcLoadActions() {
     try {
-        const resp = await fetch("/api/actions");
-        const data = await resp.json();
+        const data = await fetchJson("/api/actions", {}, "pc-error");
         const container = document.getElementById("pc-actions");
         container.innerHTML = "";
 
@@ -357,7 +395,9 @@ async function pcLoadActions() {
             title.textContent = plugin.label;
             card.appendChild(title);
 
-            if (plugin.sub_actions.length === 0) {
+            const subActions = Array.isArray(plugin.sub_actions) ? plugin.sub_actions : [];
+
+            if (subActions.length === 0) {
                 const btn = document.createElement("button");
                 btn.textContent = plugin.label;
                 btn.addEventListener("click", () =>
@@ -368,7 +408,7 @@ async function pcLoadActions() {
                 const group = document.createElement("div");
                 group.className = "btn-group";
 
-                for (const sub of plugin.sub_actions) {
+                for (const sub of subActions) {
                     const btn = document.createElement("button");
                     btn.textContent = sub.label;
                     btn.addEventListener("click", () =>
@@ -382,19 +422,18 @@ async function pcLoadActions() {
             container.appendChild(card);
         }
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
 /** 发送命令（PC 端，无需鉴权） */
 async function pcSendCommand(action, params = {}) {
     try {
-        const resp = await fetch("/api/command", {
+        const result = await fetchJson("/api/command", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action, params }),
-        });
-        const result = await resp.json();
+        }, "pc-error");
         console.log(action, result);
     } catch (e) {
         console.error("命令发送失败:", e);
@@ -413,8 +452,9 @@ async function initPCPanel() {
     const data = await pcFetchPairingCode();
     if (data && data.code) {
         pcShowPairingActive(data.code);
-        // 倒计时：从服务器返回时估算剩余时间（默认 300s）
-        pcStartCountdown(300);
+        // 倒计时使用服务器返回的剩余秒数
+        const expiresIn = data.expires_in || 300;
+        pcStartCountdown(expiresIn);
         pcStartPolling();
     } else {
         pcShowPairingEmpty();
@@ -439,9 +479,7 @@ let extPollTimer = null;
 /** 获取当前配对码信息 */
 async function extFetchPairingCode() {
     try {
-        const resp = await fetch("/api/pairing-code");
-        if (!resp.ok) return null;
-        return await resp.json();
+        return await fetchJson("/api/pairing-code");
     } catch {
         return null;
     }
@@ -463,6 +501,7 @@ function extShowPairing() {
 
 /** 显示外部控制面板 */
 function extShowDashboard() {
+    extStopPolling();
     document.getElementById("ext-standby").style.display = "none";
     document.getElementById("ext-pairing").style.display = "none";
     document.getElementById("ext-dashboard").style.display = "";
@@ -472,6 +511,17 @@ function extShowDashboard() {
     extLoadDevices();
     setInterval(extLoadStatus, STATUS_POLL_MS);
     setInterval(extLoadDevices, DEVICE_POLL_MS);
+}
+
+/** 回到待机/配对流程 */
+async function extReturnToPairing() {
+    const data = await extFetchPairingCode();
+    if (data && data.has_code) {
+        extShowPairing();
+    } else {
+        extShowStandby();
+        extStartPolling();
+    }
 }
 
 // ---- 外部配对逻辑 ----
@@ -525,12 +575,11 @@ async function handlePair() {
     document.getElementById("pair-btn").disabled = true;
 
     try {
-        const resp = await fetch("/api/authorize", {
+        const data = await fetchJson("/api/authorize", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ token: code, name: navigator.platform || "Web 浏览器" }),
-        });
-        const data = await resp.json();
+        }, "pair-error");
 
         if (data.success && data.device_key) {
             localStorage.setItem(DEVICE_KEY_STORAGE, data.device_key);
@@ -540,7 +589,7 @@ async function handlePair() {
             errorEl.textContent = data.message || "配对失败，请重试";
         }
     } catch (e) {
-        errorEl.textContent = "网络错误，请检查连接";
+        errorEl.textContent = e.message || "网络错误，请检查连接";
     } finally {
         document.getElementById("pair-btn").disabled = false;
     }
@@ -559,8 +608,8 @@ function extStartPolling() {
     extStopPolling();
     extPollTimer = setInterval(async () => {
         const data = await extFetchPairingCode();
-        if (data && data.code) {
-            // 配对码出现，切换到配对输入页
+        if (data && data.has_code) {
+            // 配对码出现，切换到配对输入页；外部页面不显示配对码正文
             extStopPolling();
             extShowPairing();
         }
@@ -571,19 +620,17 @@ function extStartPolling() {
 
 async function extLoadStatus() {
     try {
-        const resp = await authFetch("/status");
-        const data = await resp.json();
+        const data = await authFetchJson("/api/status");
         document.getElementById("ext-cpu").textContent = data.cpu_percent.toFixed(1);
         document.getElementById("ext-memory").textContent = data.memory.percent.toFixed(1);
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
 async function extLoadActions() {
     try {
-        const resp = await authFetch("/api/actions");
-        const data = await resp.json();
+        const data = await authFetchJson("/api/actions");
         const container = document.getElementById("ext-actions");
         container.innerHTML = "";
 
@@ -595,7 +642,9 @@ async function extLoadActions() {
             title.textContent = plugin.label;
             card.appendChild(title);
 
-            if (plugin.sub_actions.length === 0) {
+            const subActions = Array.isArray(plugin.sub_actions) ? plugin.sub_actions : [];
+
+            if (subActions.length === 0) {
                 const btn = document.createElement("button");
                 btn.textContent = plugin.label;
                 btn.addEventListener("click", () =>
@@ -606,7 +655,7 @@ async function extLoadActions() {
                 const group = document.createElement("div");
                 group.className = "btn-group";
 
-                for (const sub of plugin.sub_actions) {
+                for (const sub of subActions) {
                     const btn = document.createElement("button");
                     btn.textContent = sub.label;
                     btn.addEventListener("click", () =>
@@ -620,18 +669,17 @@ async function extLoadActions() {
             container.appendChild(card);
         }
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
 async function extSendCommand(action, params = {}) {
     try {
-        const resp = await authFetch("/api/command", {
+        const result = await authFetchJson("/api/command", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action, params }),
         });
-        const result = await resp.json();
         console.log(action, result);
     } catch (e) {
         console.error("命令发送失败:", e);
@@ -642,8 +690,7 @@ async function extSendCommand(action, params = {}) {
 
 async function extLoadDevices() {
     try {
-        const resp = await authFetch("/api/devices");
-        const data = await resp.json();
+        const data = await authFetchJson("/api/devices");
         const tbody = document.getElementById("ext-device-tbody");
         const emptyEl = document.getElementById("ext-device-empty");
         tbody.innerHTML = "";
@@ -681,7 +728,7 @@ async function extLoadDevices() {
             tbody.appendChild(tr);
         }
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
@@ -689,14 +736,13 @@ async function extRevokeDevice(key, rowEl) {
     if (!confirm("确定要撤销此设备的授权吗？")) return;
 
     try {
-        const resp = await authFetch("/api/devices/" + encodeURIComponent(key), {
+        const data = await authFetchJson("/api/devices/" + encodeURIComponent(key), {
             method: "DELETE",
         });
-        const data = await resp.json();
         if (data.success) {
             if (key === storedKey()) {
-                localStorage.removeItem(DEVICE_KEY_STORAGE);
-                location.reload();
+                clearStoredKey();
+                await extReturnToPairing();
             } else {
                 rowEl.remove();
                 const tbody = document.getElementById("ext-device-tbody");
@@ -704,9 +750,11 @@ async function extRevokeDevice(key, rowEl) {
                     document.getElementById("ext-device-empty").style.display = "";
                 }
             }
+        } else {
+            setUiError("ext-error", data.message || "撤销设备失败");
         }
     } catch {
-        // 忽略
+        // 错误已在页面显示
     }
 }
 
@@ -715,23 +763,19 @@ async function extRevokeDevice(key, rowEl) {
 async function initExternal() {
     document.getElementById("external-page").style.display = "";
 
-    // 情况 1：本地有 device_key → 直接进入控制面板
+    // 情况 1：本地有 device_key → 先用 /api/status 校验，再进入控制面板
     if (storedKey()) {
-        extShowDashboard();
-        return;
+        try {
+            await authFetchJson("/api/status");
+            extShowDashboard();
+            return;
+        } catch {
+            clearStoredKey();
+        }
     }
 
-    // 情况 2：无本地 key，检查是否有配对码
-    const data = await extFetchPairingCode();
-
-    if (data && data.code) {
-        // 有配对码 → 显示配对输入页
-        extShowPairing();
-    } else {
-        // 无配对码 → 显示待机页，启动轮询
-        extShowStandby();
-        extStartPolling();
-    }
+    // 情况 2：无有效本地 key，检查是否有配对码
+    await extReturnToPairing();
 
     // 绑定配对页事件
     setupCodeInputs();

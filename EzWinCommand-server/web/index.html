@@ -50,6 +50,7 @@
                 <p>内存: <span id="pc-memory">--</span>%</p>
             </div>
             <div id="pc-actions"></div>
+            <p id="pc-error" class="ui-error"></p>
         </section>
     </div>
 
@@ -66,10 +67,9 @@
         <div id="ext-pairing" style="display:none">
             <h1>EzWinCommand</h1>
 
-            <div id="pairing-code-section">
-                <p class="pairing-label">配对码</p>
-                <div id="pairing-code">----</div>
-                <p class="pairing-hint">请在另一设备上输入此配对码</p>
+            <div id="pairing-instructions">
+                <p class="pairing-label">输入 PC 端显示的配对码</p>
+                <p class="pairing-hint">配对码只会显示在 localhost 管理面板上。</p>
             </div>
 
             <div id="code-input-area">
@@ -94,6 +94,7 @@
             </div>
             <div id="ext-actions"></div>
 
+            <p id="ext-error" class="ui-error"></p>
             <details id="ext-device-manager">
                 <summary>设备管理</summary>
                 <table id="ext-device-table">

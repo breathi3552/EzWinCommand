@@ -2,13 +2,34 @@
 
 所有的 API 端点在此定义，命令执行通过 Dispatcher 分发。
 """
+from typing import Any
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent.dispatcher import Dispatcher
+from agent.auth import is_local_host
 
 router = APIRouter()
+
+
+class CommandRequest(BaseModel):
+    """命令执行请求体。"""
+    action: str = Field(min_length=1, max_length=128)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AuthorizeRequest(BaseModel):
+    """设备配对请求体。"""
+    token: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=128)
+
+
+def _is_local_client(request: Request) -> bool:
+    """判断请求是否来自本机或 FastAPI TestClient。"""
+    host = request.client.host if request.client else ""
+    return is_local_host(host)
 
 
 def _get_dispatcher(request: Request) -> Dispatcher:
@@ -22,8 +43,8 @@ async def ping():
     return {"status": "ok"}
 
 
-@router.get("/status")
-async def get_status(request: Request):
+@router.get("/api/status")
+async def get_status():
     """系统状态快照：CPU、内存等。
 
     后续可扩展为插件化状态采集。
@@ -37,16 +58,10 @@ async def get_status(request: Request):
 
 
 @router.post("/api/command")
-async def execute_command(request: Request):
-    """统一命令入口。
-
-    Body: {"action": "...", "params": {...}}
-    """
-    body = await request.json()
+async def execute_command(body: CommandRequest, request: Request):
+    """统一命令入口。"""
     dispatcher = _get_dispatcher(request)
-    action = body.get("action", "")
-    params = body.get("params")
-    result = dispatcher.execute(action, params)
+    result = dispatcher.execute(body.action, body.params)
     return {"success": result.success, "message": result.message, "data": result.data}
 
 
@@ -64,27 +79,30 @@ def _get_auth_manager(request: Request):
 
 @router.get("/api/pairing-code")
 async def get_pairing_code(request: Request):
-    """获取当前配对码（无设备时有效）。
+    """获取当前配对码状态。
 
-    无需鉴权。有设备时 code 为 None。
+    本机/TestClient 返回 code；非本机只返回状态元数据，避免在局域网泄漏配对码。
     """
     auth_manager = _get_auth_manager(request)
-    code = auth_manager.get_pairing_code()
-    return {"code": code, "has_devices": auth_manager.has_devices()}
+    payload = {
+        "has_code": auth_manager.get_pairing_code() is not None,
+        "has_devices": auth_manager.has_devices(),
+        "expires_in": auth_manager.get_pairing_code_expires_in(),
+    }
+    if _is_local_client(request):
+        payload["code"] = auth_manager.get_pairing_code()
+    return payload
 
 
 @router.post("/api/authorize")
-async def authorize(request: Request):
+async def authorize(body: AuthorizeRequest, request: Request):
     """新设备配对鉴权。
 
     无需鉴权。Body: {"token": "配对码", "name": "设备名称"}。
     成功返回 201 + device_key，失败返回 403。
     """
-    body = await request.json()
-    token = body.get("token", "")
-    name = body.get("name", "")
     auth_manager = _get_auth_manager(request)
-    device_key = auth_manager.try_pair(token, name)
+    device_key = auth_manager.try_pair(body.token, body.name)
     if device_key:
         return JSONResponse(
             status_code=201,
@@ -119,14 +137,16 @@ async def remove_device(device_key: str, request: Request):
 
 @router.post("/api/pairing-code/refresh")
 async def refresh_pairing_code(request: Request):
-    """强制生成新配对码（仅 localhost 可达，中间件已保证）。
+    """强制生成新配对码（仅 localhost 可达，由 _is_local_client 检查保证）。
 
     Returns:
         {"code": "a3x9", "expires_in": 300}
     """
+    if not _is_local_client(request):
+        return JSONResponse(status_code=403, content={"detail": "仅允许本机刷新配对码"})
     auth_manager = _get_auth_manager(request)
     code = auth_manager.generate_new_code()
-    return {"code": code, "expires_in": 300}
+    return {"code": code, "expires_in": auth_manager.get_pairing_code_expires_in()}
 
 
 class _RenameBody(BaseModel):

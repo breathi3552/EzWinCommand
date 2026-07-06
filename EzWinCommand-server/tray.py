@@ -47,9 +47,15 @@ class SystemTray:
 
     _instances: dict[int, "SystemTray"] = {}
 
-    def __init__(self, on_exit: Callable[[], None], tooltip: str = "EzWinCommand Agent") -> None:
+    def __init__(
+        self,
+        on_exit: Callable[[], None],
+        tooltip: str = "EzWinCommand Agent",
+        web_url: str = "http://127.0.0.1:8080",
+    ) -> None:
         self._on_exit = on_exit
         self._tooltip = tooltip
+        self._web_url = web_url
         self._hwnd: int | None = None
         self._nid: tuple | None = None
         self._thread: threading.Thread | None = None
@@ -182,7 +188,7 @@ class SystemTray:
             # 双击托盘图标 → 打开 Web 管理面板
             if lparam == win32con.WM_LBUTTONDBLCLK:
                 import os
-                os.startfile("http://127.0.0.1:8080")
+                os.startfile(self._web_url)
                 return 0
             if lparam == win32con.WM_RBUTTONUP:
                 self._show_menu()
@@ -191,7 +197,7 @@ class SystemTray:
         if msg == win32con.WM_COMMAND:
             if wparam == ID_OPEN_WEB:
                 import os
-                os.startfile("http://127.0.0.1:8080")
+                os.startfile(self._web_url)
                 return 0
             if wparam == ID_EXIT:
                 self._delete_tray()

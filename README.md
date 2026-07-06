@@ -130,10 +130,10 @@ PORT=8080
 ## 设备配对流程
 
 1. 在 PC 上打开 `http://localhost:8080`。
-2. 点击生成配对码。
-3. 手机访问 `http://<PC 局域网 IP>:8080`。
-4. 输入配对码和设备名。
-5. Agent 返回设备 Key，前端后续请求携带 `Authorization: Bearer <key>`。
+2. 点击生成配对码，配对码只在 localhost 管理面板显示。
+3. 手机访问 `http://<PC 局域网 IP>:8080`；外部页面只检测是否有可用配对码，不回显真实配对码。
+4. 输入 PC 端显示的配对码和设备名。
+5. Agent 返回设备 Key，前端后续请求携带 `Authorization: Bearer <key>`；若 `/api/status` 等鉴权接口返回 401/403，前端会清除本地 Key 并回到配对流程。
 6. 已配对设备持久化到运行时文件 `agent/devices.json`。
 
 安全策略：
@@ -143,7 +143,7 @@ PORT=8080
 - 配对码有效期：5 分钟。
 - 连续 5 次失败后锁定 30 秒。
 - `localhost` 请求自动放行，方便 PC 管理面板操作。
-- `/ping`、`/api/pairing-code`、`/api/authorize` 为公开端点。
+- `/ping`、`/api/pairing-code`、`/api/authorize` 为公开端点；`/api/pairing-code` 仅 localhost 响应包含真实 `code`，局域网设备只返回 `has_code` / `expires_in`。
 
 ## API
 
@@ -152,8 +152,9 @@ PORT=8080
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/ping` | 健康检查 |
-| `GET` | `/api/pairing-code` | 获取当前配对码状态 |
+| `GET` | `/api/pairing-code` | 获取配对码状态；localhost 响应包含 `code` / `has_code` / `has_devices` / `expires_in`，局域网设备只返回 `has_code` / `has_devices` / `expires_in` |
 | `POST` | `/api/authorize` | 提交配对码和设备名，换取设备 Key |
+| `POST` | `/api/pairing-code/refresh` | 刷新配对码；仅 localhost 可用 |
 
 ### 鉴权端点
 
@@ -161,13 +162,12 @@ PORT=8080
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/status` | CPU / 内存状态快照 |
-| `POST` | `/api/command` | 统一命令入口 |
-| `GET` | `/api/actions` | 列出已加载插件和子操作 |
+| `GET` | `/api/status` | CPU / 内存状态快照 |
+| `POST` | `/api/command` | 统一命令入口；请求体示例见下方 |
+| `GET` | `/api/actions` | 列出已加载插件和子操作，供前端渲染操作按钮 |
 | `GET` | `/api/devices` | 列出已配对设备 |
 | `DELETE` | `/api/devices/{device_key}` | 移除设备 |
 | `PATCH` | `/api/devices/{device_key}` | 重命名设备 |
-| `POST` | `/api/pairing-code/refresh` | 刷新配对码 |
 
 ### 命令请求示例
 
@@ -309,9 +309,9 @@ Agent 启动时会尝试通过 `netsh` 添加入站规则，允许 `8080` 端口
 
 - 通信仍为 HTTP，适合可信局域网；公网暴露前需要 HTTPS 或专用隧道。
 - 插件参数目前是自由字典，尚未接入 Pydantic Schema 校验。
-- `/status` 当前返回 CPU / 内存快照，尚未改为插件领域状态聚合。
+- `/api/status` 当前返回 CPU / 内存快照，尚未改为插件领域状态聚合。
 - Android App 尚未实现，当前移动端入口是手机浏览器。
-- `BEARER_TOKEN` 环境变量保留但当前鉴权以设备配对 Key 为准。
+- 已移除全局 `BEARER_TOKEN` 环境变量，鉴权以设备配对 Key 为准。
 
 ## 路线图
 
@@ -319,7 +319,7 @@ Agent 启动时会尝试通过 `netsh` 添加入站规则，允许 `8080` 端口
 
 - [ ] 为插件参数引入 Pydantic Schema。
 - [ ] 让 `/api/actions` 返回参数定义，供前端动态渲染表单。
-- [ ] 将 `/status` 改为 Dispatcher 聚合插件 `get_status()`。
+- [ ] 将 `/api/status` 改为 Dispatcher 聚合插件 `get_status()`。
 
 ### P1：插件生态基础
 
