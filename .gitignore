@@ -22,10 +22,11 @@ Thumbs.db
 
 # 项目配置与文档（本地开发资料，不纳入版本控制）
 .omp/
+.agent/
 docs/
 
 
-# 设备鉴权数据（运行时生成）
-agent/devices.json
+# 设备鉴权数据（运行时生成，包含本机配对 Key）
+**/agent/devices.json
 # 测试产物
 test_screenshots/
