@@ -286,7 +286,8 @@ EzWinCommand-server/start_daemon.pyw
 需要管理员权限同步防火墙时，也可以双击仓库根目录：
 
 ```text
-run-admin.bat
+run-admin.bat              # 管理员启动，保留控制台
+run-admin_no_console.bat   # 管理员静默启动，不保留控制台
 ```
 
 ### 开机自启动
