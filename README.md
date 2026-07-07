@@ -1,8 +1,8 @@
 # EzWinCommand
 
-EzWinCommand 是一个运行在 Windows PC 上的本地控制台。PC 端启动 Agent 后，手机浏览器可通过局域网访问 Web UI，完成配对后控制 Windows 常用操作。
+EzWinCommand 是一个运行在 Windows PC 上的本地控制台。PC 端启动 Server 后，手机浏览器可通过局域网访问 Web UI，完成配对后控制 Windows 常用操作。
 
-当前形态：**Windows Agent + 响应式 Web UI**。Android App 尚未实现。
+当前形态：**Windows Server + 响应式 Web UI**。Android App 尚未实现。
 
 ## 功能
 
@@ -127,7 +127,7 @@ netsh advfirewall firewall add rule name="EzWinCommand 9090" dir=in action=allow
 ```text
 .
 ├── EzWinCommand-server/
-│   ├── app.py                 # Agent 入口
+│   ├── app.py                 # Server 入口
 │   ├── config.py              # 本地配置加载
 │   ├── start_daemon.pyw       # 静默启动器
 │   ├── startup.py             # 开机自启管理
@@ -145,11 +145,12 @@ netsh advfirewall firewall add rule name="EzWinCommand 9090" dir=in action=allow
 
 - [ ] HTTP 仅适合可信局域网；公网访问前需要 HTTPS 或隧道。
 - [ ] 防火墙失败目前主要靠 UAC/日志提示，后续可在 Web UI 显示明确告警。
-- [ ] `/api/status` 仍是 CPU / 内存快照，后续可改成插件状态聚合。
+- [x] `/api/status` 已移除（CPU/内存快照不再轮询），`psutil` 保留供 calculator 插件使用。
+- [x] WebView 插件布局已调优：共享渲染函数、mobile-first grid、兼容新旧插件字段。
 - [ ] 插件参数仍是自由字典，后续可引入参数 Schema。
 - [ ] Android App 未实现，当前移动端入口是手机浏览器。
 - [ ] 可增加更多插件：锁屏、睡眠、Steam、OBS、宏命令。
 
 ## 许可证
 
-当前仓库未声明开源许可证。使用、分发或二次开发前，请先补充明确的 LICENSE。
+本项目使用 MIT License。详见 `LICENSE`。

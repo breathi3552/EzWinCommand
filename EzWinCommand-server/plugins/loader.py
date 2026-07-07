@@ -15,13 +15,19 @@ logger = logging.getLogger(__name__)
 class PluginLoader:
     """管理插件的发现、加载与查找。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        enabled: dict[str, bool] | None = None,
+    ) -> None:
         self.plugins: dict[str, BasePlugin] = {}
+        self._enabled: dict[str, bool] = enabled or {}
+        self.errors: list[dict[str, str]] = []
 
     def discover(self, plugin_dir: str | Path, package: str = "plugins") -> None:
         """扫描 plugin_dir 目录，加载所有合法插件。
 
         plugin_dir 可为绝对 Path；package 用于构造 import 路径，避免依赖当前工作目录。
+        加载失败的模块记录到 self.errors，不中断后续加载。
         """
         root = Path(plugin_dir)
         if not root.is_dir():
@@ -33,10 +39,15 @@ class PluginLoader:
                 continue  # 跳过 __init__.py 和私有模块
 
             module_path = f"{package}.{py_file.stem}"
+            module_name = py_file.stem
             try:
                 module = importlib.import_module(module_path)
-            except Exception:
+            except Exception as exc:
                 logger.exception("加载插件模块失败: %s", module_path)
+                self.errors.append({
+                    "name": module_name,
+                    "error": f"模块导入失败: {exc}",
+                })
                 continue
 
             for attr_name in dir(module):
@@ -46,7 +57,16 @@ class PluginLoader:
                 if attr is BasePlugin:
                     continue
 
-                plugin: BasePlugin = attr()
+                try:
+                    plugin: BasePlugin = attr()
+                except Exception as exc:
+                    logger.exception("实例化插件失败: %s", attr_name)
+                    self.errors.append({
+                        "name": attr_name,
+                        "error": f"实例化失败: {exc}",
+                    })
+                    continue
+
                 if not plugin.name:
                     logger.warning("插件 %s 未设置 name，已跳过", attr_name)
                     continue
@@ -59,3 +79,17 @@ class PluginLoader:
     def get(self, name: str) -> BasePlugin | None:
         """按名称获取插件实例。"""
         return self.plugins.get(name)
+
+    def is_enabled(self, name: str) -> bool:
+        """检查插件是否启用。
+
+        未在启用表中显式记录的插件默认启用。
+        """
+        entry = self._enabled.get(name)
+        if entry is None:
+            return True
+        return entry
+
+    def set_enabled(self, name: str, enabled: bool) -> None:
+        """设置插件启用状态。"""
+        self._enabled[name] = enabled

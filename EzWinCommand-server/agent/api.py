@@ -43,18 +43,6 @@ async def ping():
     return {"status": "ok"}
 
 
-@router.get("/api/status")
-async def get_status():
-    """系统状态快照：CPU、内存等。
-
-    后续可扩展为插件化状态采集。
-    """
-    import psutil
-
-    return {
-        "cpu_percent": psutil.cpu_percent(interval=0.1),
-        "memory": psutil.virtual_memory()._asdict(),
-    }
 
 
 @router.post("/api/command")
@@ -70,6 +58,32 @@ async def list_actions(request: Request):
     """列出所有可用的 action。"""
     dispatcher = _get_dispatcher(request)
     return {"actions": dispatcher.list_actions()}
+
+
+@router.get("/api/plugins")
+async def list_plugins(request: Request):
+    """列出所有本地插件（含禁用和加载错误信息）。"""
+    dispatcher = _get_dispatcher(request)
+    return {"plugins": dispatcher.list_plugins(include_disabled=True)}
+
+
+class _EnablePluginBody(BaseModel):
+    """插件启用/禁用请求体。"""
+    enabled: bool
+
+
+@router.patch("/api/plugins/{plugin_name}")
+async def set_plugin_enabled(plugin_name: str, body: _EnablePluginBody, request: Request):
+    """启用或禁用指定插件。"""
+    dispatcher = _get_dispatcher(request)
+    success = dispatcher.set_plugin_enabled(plugin_name, body.enabled)
+    if not success:
+        return JSONResponse(status_code=404, content={"detail": f"未知插件: {plugin_name}"})
+    plugin = next(
+        item for item in dispatcher.list_plugins(include_disabled=True)
+        if item["name"] == plugin_name
+    )
+    return {"success": True, "plugin": plugin}
 
 
 def _get_auth_manager(request: Request):

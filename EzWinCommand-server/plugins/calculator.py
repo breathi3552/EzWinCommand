@@ -10,6 +10,14 @@ from plugins.base import BasePlugin, CommandResult
 class CalculatorPlugin(BasePlugin):
     name = "calculator"
     label = "计算器"
+    description = "打开或关闭 Windows 计算器应用"
+    version = "0.1.0"
+
+    def get_sub_actions(self) -> list[dict[str, Any]]:
+        return [
+            {"id": "open", "label": "打开", "description": "启动 Windows 计算器"},
+            {"id": "close", "label": "关闭", "description": "关闭运行中的计算器进程"},
+        ]
 
     def execute(self, params: dict[str, Any]) -> CommandResult:
         action = params.get("sub_action", "open")

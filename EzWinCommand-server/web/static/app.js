@@ -6,7 +6,6 @@ const DEVICE_KEY_STORAGE = "ez_device_key";
 const PC_CODE_POLL_MS = 3000;   // PC 端配对码服务器轮询间隔
 const EXT_POLL_MS = 3000;        // 外部页面配对码轮询间隔
 const COUNTDOWN_TICK_MS = 1000;  // 倒计时每秒更新
-const STATUS_POLL_MS = 5000;     // 系统状态轮询间隔
 const DEVICE_POLL_MS = 30000;    // 设备列表轮询间隔
 
 // ============================================================
@@ -369,58 +368,12 @@ async function pcRevokeDevice(key, rowEl) {
 
 // ---- PC 控制面板 ----
 
-/** 加载系统状态（PC 端，无需鉴权） */
-async function pcLoadStatus() {
-    try {
-        const data = await fetchJson("/api/status", {}, "pc-error");
-        document.getElementById("pc-cpu").textContent = data.cpu_percent.toFixed(1);
-        document.getElementById("pc-memory").textContent = data.memory.percent.toFixed(1);
-    } catch {
-        // 错误已在页面显示
-    }
-}
 
 /** 加载操作按钮（PC 端，无需鉴权） */
 async function pcLoadActions() {
     try {
         const data = await fetchJson("/api/actions", {}, "pc-error");
-        const container = document.getElementById("pc-actions");
-        container.innerHTML = "";
-
-        for (const plugin of data.actions) {
-            const card = document.createElement("div");
-            card.className = "plugin-card";
-
-            const title = document.createElement("h3");
-            title.textContent = plugin.label;
-            card.appendChild(title);
-
-            const subActions = Array.isArray(plugin.sub_actions) ? plugin.sub_actions : [];
-
-            if (subActions.length === 0) {
-                const btn = document.createElement("button");
-                btn.textContent = plugin.label;
-                btn.addEventListener("click", () =>
-                    pcSendCommand(plugin.name)
-                );
-                card.appendChild(btn);
-            } else {
-                const group = document.createElement("div");
-                group.className = "btn-group";
-
-                for (const sub of subActions) {
-                    const btn = document.createElement("button");
-                    btn.textContent = sub.label;
-                    btn.addEventListener("click", () =>
-                        pcSendCommand(plugin.name, { sub_action: sub.id })
-                    );
-                    group.appendChild(btn);
-                }
-                card.appendChild(group);
-            }
-
-            container.appendChild(card);
-        }
+        renderPluginCards("pc-actions", data.actions, pcSendCommand);
     } catch {
         // 错误已在页面显示
     }
@@ -464,10 +417,8 @@ async function initPCPanel() {
     pcLoadDevices();
     setInterval(pcLoadDevices, DEVICE_POLL_MS);
 
-    // 加载系统状态和操作
-    pcLoadStatus();
+    // 加载操作按钮
     pcLoadActions();
-    setInterval(pcLoadStatus, STATUS_POLL_MS);
 }
 
 // ============================================================
@@ -505,11 +456,8 @@ function extShowDashboard() {
     document.getElementById("ext-standby").style.display = "none";
     document.getElementById("ext-pairing").style.display = "none";
     document.getElementById("ext-dashboard").style.display = "";
-
-    extLoadStatus();
     extLoadActions();
     extLoadDevices();
-    setInterval(extLoadStatus, STATUS_POLL_MS);
     setInterval(extLoadDevices, DEVICE_POLL_MS);
 }
 
@@ -618,56 +566,11 @@ function extStartPolling() {
 
 // ---- 外部控制面板 ----
 
-async function extLoadStatus() {
-    try {
-        const data = await authFetchJson("/api/status");
-        document.getElementById("ext-cpu").textContent = data.cpu_percent.toFixed(1);
-        document.getElementById("ext-memory").textContent = data.memory.percent.toFixed(1);
-    } catch {
-        // 错误已在页面显示
-    }
-}
 
 async function extLoadActions() {
     try {
         const data = await authFetchJson("/api/actions");
-        const container = document.getElementById("ext-actions");
-        container.innerHTML = "";
-
-        for (const plugin of data.actions) {
-            const card = document.createElement("div");
-            card.className = "plugin-card";
-
-            const title = document.createElement("h3");
-            title.textContent = plugin.label;
-            card.appendChild(title);
-
-            const subActions = Array.isArray(plugin.sub_actions) ? plugin.sub_actions : [];
-
-            if (subActions.length === 0) {
-                const btn = document.createElement("button");
-                btn.textContent = plugin.label;
-                btn.addEventListener("click", () =>
-                    extSendCommand(plugin.name)
-                );
-                card.appendChild(btn);
-            } else {
-                const group = document.createElement("div");
-                group.className = "btn-group";
-
-                for (const sub of subActions) {
-                    const btn = document.createElement("button");
-                    btn.textContent = sub.label;
-                    btn.addEventListener("click", () =>
-                        extSendCommand(plugin.name, { sub_action: sub.id })
-                    );
-                    group.appendChild(btn);
-                }
-                card.appendChild(group);
-            }
-
-            container.appendChild(card);
-        }
+        renderPluginCards("ext-actions", data.actions, extSendCommand);
     } catch {
         // 错误已在页面显示
     }
@@ -763,10 +666,10 @@ async function extRevokeDevice(key, rowEl) {
 async function initExternal() {
     document.getElementById("external-page").style.display = "";
 
-    // 情况 1：本地有 device_key → 先用 /api/status 校验，再进入控制面板
+    // 情况 1：本地有 device_key → 先用 /api/actions 校验，再进入控制面板
     if (storedKey()) {
         try {
-            await authFetchJson("/api/status");
+            await authFetchJson("/api/actions");
             extShowDashboard();
             return;
         } catch {
@@ -782,6 +685,86 @@ async function initExternal() {
     document.getElementById("pair-btn").addEventListener("click", handlePair);
 }
 
+
+/** 归一化插件数据：兼容旧字段 {name,label,sub_actions} 与新字段 {description,version,actions} */
+function normalizePlugin(plugin) {
+    const subActions = Array.isArray(plugin.sub_actions) ? plugin.sub_actions
+        : Array.isArray(plugin.actions) ? plugin.actions
+        : [];
+    return {
+        name: plugin.name,
+        label: plugin.label || plugin.name,
+        description: plugin.description || "",
+        version: plugin.version || "",
+        sub_actions: subActions,
+    };
+}
+
+/** 共享渲染：将 actions 列表渲染为插件卡片，填入 containerId 容器 */
+function renderPluginCards(containerId, actions, sendCommand) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = "";
+
+    if (!actions || actions.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "plugin-empty";
+        empty.textContent = "暂无可用插件";
+        container.appendChild(empty);
+        return;
+    }
+
+    for (const raw of actions) {
+        const plugin = normalizePlugin(raw);
+        const card = document.createElement("div");
+        card.className = "plugin-card";
+
+        // 标题 + 说明提示
+        const title = document.createElement("h3");
+        title.className = "plugin-title";
+
+        const titleText = document.createElement("span");
+        titleText.textContent = plugin.label;
+        title.appendChild(titleText);
+
+        if (plugin.description || plugin.version) {
+            const tip = document.createElement("span");
+            tip.className = "plugin-info";
+            tip.textContent = "i";
+            tip.tabIndex = 0;
+            tip.setAttribute("aria-label", "插件说明");
+            const tipLines = [];
+            if (plugin.description) tipLines.push(plugin.description);
+            if (plugin.version) tipLines.push("版本: " + plugin.version);
+            tip.setAttribute("data-tooltip", tipLines.join("\n"));
+            title.appendChild(tip);
+        }
+
+        card.appendChild(title);
+
+        // 子操作按钮
+        const subActions = plugin.sub_actions;
+        if (subActions.length === 0) {
+            const btn = document.createElement("button");
+            btn.textContent = plugin.label;
+            btn.addEventListener("click", () => sendCommand(plugin.name));
+            card.appendChild(btn);
+        } else {
+            const group = document.createElement("div");
+            group.className = "plugin-actions";
+            for (const sub of subActions) {
+                const btn = document.createElement("button");
+                btn.textContent = sub.label;
+                btn.addEventListener("click", () =>
+                    sendCommand(plugin.name, { sub_action: sub.id })
+                );
+                group.appendChild(btn);
+            }
+            card.appendChild(group);
+        }
+
+        container.appendChild(card);
+    }
+}
 // ============================================================
 // 通用工具
 // ============================================================

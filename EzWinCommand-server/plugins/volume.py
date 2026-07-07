@@ -11,8 +11,10 @@ from plugins.base import BasePlugin, CommandResult
 class VolumePlugin(BasePlugin):
     name = "volume"
     label = "音量控制"
+    description = "通过模拟多媒体按键控制系统音量"
+    version = "0.1.0"
 
-    def get_sub_actions(self) -> list[dict[str, str]]:
+    def get_sub_actions(self) -> list[dict[str, Any]]:
         return [
             {"id": "up",   "label": "+"},
             {"id": "down", "label": "-"},

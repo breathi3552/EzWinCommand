@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EzWinCommand</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
 </head>
 <body>
 
@@ -45,11 +46,7 @@
 
         <!-- 控制面板区 -->
         <section id="pc-control-panel">
-            <div id="pc-status">
-                <p>CPU: <span id="pc-cpu">--</span>%</p>
-                <p>内存: <span id="pc-memory">--</span>%</p>
-            </div>
-            <div id="pc-actions"></div>
+            <div id="pc-actions" class="plugins-grid"></div>
             <p id="pc-error" class="ui-error"></p>
         </section>
     </div>
@@ -88,11 +85,7 @@
         <!-- 外部控制面板（配对后） -->
         <div id="ext-dashboard" style="display:none">
             <h1>EzWinCommand</h1>
-            <div id="ext-status">
-                <p>CPU: <span id="ext-cpu">--</span>%</p>
-                <p>内存: <span id="ext-memory">--</span>%</p>
-            </div>
-            <div id="ext-actions"></div>
+            <div id="ext-actions" class="plugins-grid"></div>
 
             <p id="ext-error" class="ui-error"></p>
             <details id="ext-device-manager">

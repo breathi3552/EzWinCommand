@@ -36,18 +36,32 @@ class BasePlugin(ABC):
     子类需要：
     1. 设置 name 属性（用于路由分发）。
     2. 实现 execute(params) 方法。
-    3. 可选实现 get_status() 方法（状态采集）。
+    3. 可选设置 label/description/version 属性。
     """
 
     name: str = ""
 
     label: str = ""  # 人类可读名称，为空时回退到 name
-    def get_sub_actions(self) -> list[dict[str, str]]:
+    description: str = ""  # 功能描述
+    version: str = "0.1.0"  # 插件版本
+
+    def get_metadata(self) -> dict[str, Any]:
+        """返回插件静态元数据。"""
+        return {
+            "name": self.name,
+            "label": self.label or self.name,
+            "description": self.description,
+            "version": self.version,
+        }
+
+    def get_sub_actions(self) -> list[dict[str, Any]]:
         """返回支持的子操作列表。
 
         每个子操作是一个 dict：
             - id:   子操作标识符（传给 execute 的 params.sub_action）
             - label: 人类可读的显示文本
+            - description（可选）: 子操作说明
+            - params_schema（可选）: 子操作参数字段描述
 
         返回空列表表示该插件是简单触发型（如 calculator）。
         """

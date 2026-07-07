@@ -1,4 +1,4 @@
-"""EzWinCommand Agent 入口。
+"""EzWinCommand Server 入口。
 
 启动 FastAPI 服务，初始化 Dispatcher、防火墙、系统托盘。
 """
@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 
-app = FastAPI(title="EzWinCommand Agent")
+app = FastAPI(title="EzWinCommand Server")
 
 # —— 初始化 Dispatcher ——
-dispatcher = Dispatcher()
+dispatcher = Dispatcher(plugins_json_path=BASE_DIR / "agent" / "plugins.json")
 dispatcher.discover_plugins(BASE_DIR / "plugins", package="plugins")
 app.state.dispatcher = dispatcher
 
@@ -66,13 +66,14 @@ def main() -> None:
     tray = SystemTray(
         on_exit=_on_tray_exit,
         web_url=f"http://127.0.0.1:{config.PORT}",
+        icon_path=BASE_DIR / "assets" / "ezwincommand.ico",
     )
     try:
         tray.start()
     except Exception:
         logger.warning("系统托盘启动失败，以无托盘模式运行")
 
-    logger.info("启动 EzWinCommand Agent @ http://%s:%d", config.HOST, config.PORT)
+    logger.info("启动 EzWinCommand Server @ http://%s:%d", config.HOST, config.PORT)
     server.run()
 
     # 服务退出后清理托盘
@@ -92,8 +93,8 @@ def _parse_port_arg(value: str) -> int:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="EzWinCommand Agent",
-        description="Windows 命令代理服务",
+        prog="EzWinCommand Server",
+        description="Windows 本地控制服务",
     )
     parser.add_argument("--host", default=None,
                         help="监听地址（临时覆盖配置文件，不写回）")
@@ -112,10 +113,10 @@ if __name__ == "__main__":
     if args.install:
         from startup import install
         install()
-        print("EzWinCommand Agent 已注册开机自启动。")
+        print("EzWinCommand Server 已注册开机自启动。")
     elif args.uninstall:
         from startup import uninstall
         uninstall()
-        print("EzWinCommand Agent 已注销开机自启动。")
+        print("EzWinCommand Server 已注销开机自启动。")
     else:
         main()

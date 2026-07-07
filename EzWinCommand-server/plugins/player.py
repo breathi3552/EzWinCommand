@@ -10,14 +10,15 @@ from plugins.base import BasePlugin, CommandResult
 class PlayerPlugin(BasePlugin):
     name = "player"
     label = "媒体控制"
-
+    description = "通过模拟多媒体按键控制系统媒体播放"
+    version = "0.1.0"
     # 虚拟键码
     VK_MEDIA_PLAY_PAUSE = 0xB3
     VK_MEDIA_NEXT_TRACK  = 0xB0
     VK_MEDIA_PREV_TRACK  = 0xB1
     KEYEVENTF_KEYUP      = 0x0002
 
-    def get_sub_actions(self) -> list[dict[str, str]]:
+    def get_sub_actions(self) -> list[dict[str, Any]]:
         return [
             {"id": "play_pause", "label": "播放/暂停"},
             {"id": "prev",       "label": "上一曲"},

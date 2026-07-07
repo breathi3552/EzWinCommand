@@ -1,10 +1,11 @@
 """Windows 系统托盘模块。
 
-在任务栏通知区域显示 EzWinCommand 图标，提供右键菜单（状态、退出）。
-用 shell32.dll 系统图标，无需额外资源文件。
+在任务栏通知区域显示 EzWinCommand Server 图标，提供右键菜单（状态、退出）。
+优先加载自定义图标，失败时回退系统默认图标。
 """
 import logging
 import threading
+from pathlib import Path
 from typing import Callable
 
 import win32api
@@ -21,16 +22,31 @@ ID_STATUS = 1002
 ID_OPEN_WEB = 1003
 
 
-def _load_default_icon() -> int:
-    """加载系统默认应用程序图标（16×16）。"""
+def _load_icon(icon_path: str | Path | None = None) -> int:
+    """加载自定义 .ico，失败时回退到系统默认图标。
+
+    优先使用 LR_LOADFROMFILE 从文件加载 32×32 自定义图标；
+    若文件不存在或加载失败，回退到系统 IDI_APPLICATION。
+    """
+    if icon_path:
+        try:
+            icon_str = str(icon_path)
+            return win32gui.LoadImage(
+                0,
+                icon_str,
+                win32con.IMAGE_ICON,
+                0, 0,
+                win32con.LR_LOADFROMFILE | win32con.LR_DEFAULTSIZE,
+            )
+        except Exception:
+            logger.warning("自定义图标 %s 加载失败，回退到系统默认图标", icon_path)
     return win32gui.LoadImage(
         0,
-        win32con.IDI_APPLICATION,  # 32512
+        win32con.IDI_APPLICATION,
         win32con.IMAGE_ICON,
         16, 16,
         win32con.LR_SHARED,
     )
-
 
 class SystemTray:
     """Windows 系统托盘。
@@ -50,12 +66,14 @@ class SystemTray:
     def __init__(
         self,
         on_exit: Callable[[], None],
-        tooltip: str = "EzWinCommand Agent",
+        tooltip: str = "EzWinCommand Server",
         web_url: str = "http://127.0.0.1:8080",
+        icon_path: str | Path | None = None,
     ) -> None:
         self._on_exit = on_exit
         self._tooltip = tooltip
         self._web_url = web_url
+        self._icon_path = icon_path
         self._hwnd: int | None = None
         self._nid: tuple | None = None
         self._thread: threading.Thread | None = None
@@ -124,7 +142,7 @@ class SystemTray:
         SystemTray._instances[self._hwnd] = self
 
     def _add_tray_icon(self) -> None:
-        hicon = _load_default_icon()
+        hicon = _load_icon(self._icon_path)
         self._nid = (
             self._hwnd,
             0,  # uid
@@ -152,7 +170,7 @@ class SystemTray:
             # 标题行（灰色，不可点击）
             win32gui.AppendMenu(
                 menu, win32con.MF_STRING | win32con.MF_GRAYED,
-                ID_STATUS, "EzWinCommand Agent",
+                ID_STATUS, "EzWinCommand Server",
             )
             win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
             win32gui.AppendMenu(menu, win32con.MF_STRING, ID_OPEN_WEB, "打开 Web 管理(&O)")
