@@ -16,11 +16,28 @@ EzWinCommand 是一个运行在 Windows PC 上的本地控制台。PC 端启动 
 
 要求：Windows 10/11，Python 3.13。
 
+首次使用先安装依赖：
+
 ```bat
 cd EzWinCommand-server
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+推荐从仓库根目录双击脚本启动：
+
+| 脚本 | 用途 |
+|---|---|
+| `run-admin.bat` | 管理员启动，保留控制台，适合首次运行和排查防火墙/日志问题 |
+| `run-admin_no_console.bat` | 管理员静默启动，不保留控制台，适合日常使用 |
+| `install-startup.bat` | 注册开机自启动 |
+| `uninstall-startup.bat` | 注销开机自启动 |
+
+也可以在服务目录手动启动：
+
+```bat
+cd EzWinCommand-server
 python app.py
 ```
 
@@ -64,16 +81,7 @@ python app.py --port 9090
 
 注意：如果把 `HOST` 改成 `127.0.0.1`，手机将无法访问；局域网访问应保持 `HOST=0.0.0.0`。
 
-## 常用脚本
-
-根目录提供几个双击脚本：
-
-| 脚本 | 用途 |
-|---|---|
-| `run-admin.bat` | 管理员启动，保留控制台，适合排查防火墙/日志问题 |
-| `run-admin_no_console.bat` | 管理员静默启动，不保留控制台 |
-| `install-startup.bat` | 注册开机自启动 |
-| `uninstall-startup.bat` | 注销开机自启动 |
+## 静默启动
 
 服务目录内还有：
 
