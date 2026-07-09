@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.EzWinCommand" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/ezwin_primary</item>
+        <item name="colorPrimaryVariant">@color/ezwin_primary_variant</item>
+        <item name="colorSecondary">@color/ezwin_secondary</item>
+        <item name="android:windowBackground">@color/ezwin_background</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:navigationBarColor">@color/ezwin_background</item>
+        <item name="android:statusBarColor">@color/ezwin_background</item>
+    </style>
+</resources>

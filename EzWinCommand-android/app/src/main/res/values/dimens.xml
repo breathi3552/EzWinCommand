@@ -1,0 +1,5 @@
+<resources>
+    <dimen name="control_screen_padding">16dp</dimen>
+    <dimen name="main_screen_spacing">12dp</dimen>
+    <dimen name="main_screen_section_spacing">20dp</dimen>
+</resources>

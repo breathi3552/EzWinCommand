@@ -2,12 +2,13 @@
 
 EzWinCommand 是一个运行在 Windows PC 上的本地控制台。PC 端启动 Server 后，手机浏览器可通过局域网访问 Web UI，完成配对后控制 Windows 常用操作。
 
-当前形态：**Windows Server + 响应式 Web UI**。Android App 尚未实现。
+当前形态：**Windows Server + 响应式 Web UI**。Android App 已支持通过局域网连接现有 Windows Server。
 
 ## 功能
 
 - PC 管理面板：生成配对码、管理设备、执行控制命令。
 - 手机控制面板：输入 PC 显示的配对码后控制 Windows。
+- Android App：在同一局域网内输入 PC 地址并完成配对，随后控制 Windows。
 - 设备配对鉴权：4 位配对码、设备 Key、撤销/重命名设备。
 - 插件化命令：当前内置计算器、媒体控制、音量控制。
 - Windows 集成：系统托盘、静默启动、开机自启、防火墙规则同步。
@@ -53,6 +54,14 @@ http://localhost:8080
 http://<PC局域网IP>:8080
 ```
 
+Android App 连接地址同样使用：
+
+```text
+http://<PC局域网IP>:<PORT>
+```
+
+这里的 `<PC局域网IP>` 必须是 PC 在当前局域网中的实际 IP，例如 `192.168.1.10`；Android 里的 `localhost` 只代表手机自己，不是 PC。
+
 首次运行会自动创建本地配置文件：
 
 ```text
@@ -79,7 +88,34 @@ cd EzWinCommand-server
 python app.py --port 9090
 ```
 
-注意：如果把 `HOST` 改成 `127.0.0.1`，手机将无法访问；局域网访问应保持 `HOST=0.0.0.0`。
+注意：如果把 `HOST` 改成 `127.0.0.1`，手机和 Android App 都将无法访问；局域网访问应保持 `HOST=0.0.0.0`。
+
+## Android App 局域网连接
+
+1. 在 PC 端打开 `http://localhost:<PORT>`。
+2. 点击“生成配对码”。配对码只在 PC 管理面板显示，Android App 不会从服务端读取真实配对码。
+3. 在 Android App 中输入 `http://<PC局域网IP>:<PORT>`，例如 `http://192.168.1.10:8080`。
+4. 在 Android App 中输入 PC 显示的 4 位配对码和设备名。
+5. 配对成功后，Android App 会保存设备 Key，后续操作自动带上授权。
+
+失败排查顺序：
+
+1. 先确认 PC 本机能访问 `http://localhost:<PORT>/ping`，并返回 `{"status":"ok"}`。
+2. 确认手机/Android App 与 PC 在同一局域网，且输入的是 PC 局域网 IP，不是 `localhost`、`127.0.0.1` 或别名主机名。
+3. 确认 `config.local.env` 或启动参数中保持 `HOST=0.0.0.0`。
+4. 确认端口正确，`/ping` 能访问，且 Windows 防火墙已放行当前端口。
+
+防火墙 / UAC / netsh 兜底：
+
+- 普通权限启动时，程序会尝试弹出 UAC 同步防火墙规则。若弹窗出现，请允许。
+- 如果你更习惯保留控制台，可使用 `run-admin.bat`；日常静默运行可用 `run-admin_no_console.bat`。
+- 如果普通权限路径仍然失败，以管理员身份执行 `netsh` 手动放行端口，例如：
+
+```bat
+netsh advfirewall firewall add rule name="EzWinCommand 8080" dir=in action=allow protocol=tcp localport=8080 profile=any enable=yes
+```
+
+把 `8080` 换成你的实际端口。
 
 ## 静默启动
 
@@ -104,7 +140,7 @@ EzWinCommand-server/start_daemon.pyw
 - 配对码：`0-9a-z`，4 位，5 分钟有效。
 - 连续 5 次失败会锁定 30 秒。
 - 非 localhost 页面不会回显真实配对码。
-- 已配对设备保存在本机运行时文件 `EzWinCommand-server/agent/devices.json`，该文件不提交。
+- 已配对设备保存在本机运行时文件 `EzWinCommand-server/agent/devices.json`。
 
 ## 手机无法访问时
 
@@ -156,7 +192,7 @@ netsh advfirewall firewall add rule name="EzWinCommand 9090" dir=in action=allow
 - [x] `/api/status` 已移除（CPU/内存快照不再轮询），`psutil` 保留供 calculator 插件使用。
 - [x] WebView 插件布局已调优：共享渲染函数、mobile-first grid、兼容新旧插件字段。
 - [ ] 插件参数仍是自由字典，后续可引入参数 Schema。
-- [ ] Android App 未实现，当前移动端入口是手机浏览器。
+- [x] Android App 已支持局域网连接；手机浏览器入口仍可继续使用。
 - [ ] 可增加更多插件：锁屏、睡眠、Steam、OBS、宏命令。
 
 ## 许可证

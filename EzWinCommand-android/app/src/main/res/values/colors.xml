@@ -1,0 +1,17 @@
+<resources>
+    <color name="ezwin_background">#1A1A2E</color>
+    <color name="ezwin_panel">#0D1B2A</color>
+    <color name="ezwin_panel_alt">#16213E</color>
+    <color name="ezwin_input">#0D1B3E</color>
+    <color name="ezwin_border">#334455</color>
+    <color name="ezwin_text">#E0E0E0</color>
+    <color name="ezwin_text_muted">#8888AA</color>
+    <color name="ezwin_primary">#0F3460</color>
+    <color name="ezwin_primary_variant">#1A5A9A</color>
+    <color name="ezwin_secondary">#4FC3F7</color>
+    <color name="ezwin_error">#FF6B6B</color>
+    <color name="ezwin_warning">#FFB74D</color>
+    <color name="ezwin_danger_bg">#5A1A1A</color>
+    <color name="ezwin_button_disabled">#334455</color>
+    <color name="launcher_background">#0F172A</color>
+</resources>

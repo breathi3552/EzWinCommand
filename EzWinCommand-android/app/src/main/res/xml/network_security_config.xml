@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+    <!-- Android network-security-config cannot express private IPv4 CIDR ranges as domains.
+         Runtime URL validation in EzApiClient limits HTTP targets to localhost and RFC1918 LAN hosts. -->
+</network-security-config>
