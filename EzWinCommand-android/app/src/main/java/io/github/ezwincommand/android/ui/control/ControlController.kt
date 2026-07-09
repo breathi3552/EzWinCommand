@@ -6,6 +6,7 @@ import io.github.ezwincommand.android.network.EzApiClient
 
 class ControlController(
     private val apiClient: EzApiClient,
+    private val currentDeviceKeyProvider: () -> String? = { null },
     private val onAuthInvalid: () -> Unit,
 ) {
     suspend fun load(): ControlUiState {
@@ -17,7 +18,7 @@ class ControlController(
                 ControlUiState.Error("授权已失效，请重新配对。", authInvalid = true)
             }
             actionsResult is ApiResult.Success && devicesResult is ApiResult.Success -> {
-                ControlUiState.Ready(actionsResult.value, devicesResult.value)
+                ControlUiState.Ready(actionsResult.value, devicesResult.value, currentDeviceKeyProvider()?.trim()?.takeIf { it.isNotEmpty() })
             }
             actionsResult is ApiResult.HttpError -> ControlUiState.Error(actionsResult.message, authInvalid = false)
             actionsResult is ApiResult.NetworkError -> ControlUiState.Error(actionsResult.message, authInvalid = false)
@@ -45,6 +46,22 @@ class ControlController(
 
     suspend fun revokeDevice(deviceKey: String): Boolean {
         return when (val result = apiClient.revokeDevice(deviceKey)) {
+            is ApiResult.Success -> result.value
+            is ApiResult.HttpError -> {
+                if (result.status == 401 || result.status == 403) {
+                    onAuthInvalid()
+                }
+                false
+            }
+            is ApiResult.NetworkError -> false
+            is ApiResult.ParseError -> false
+        }
+    }
+
+    suspend fun renameDevice(deviceKey: String, name: String): Boolean {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return false
+        return when (val result = apiClient.renameDevice(deviceKey, trimmed)) {
             is ApiResult.Success -> result.value
             is ApiResult.HttpError -> {
                 if (result.status == 401 || result.status == 403) {

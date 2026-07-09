@@ -98,6 +98,14 @@ open class EzApiClient(
         parser = { body -> body.optBoolean("success", false) },
     )
 
+    open suspend fun renameDevice(deviceKey: String, name: String): ApiResult<Boolean> = request(
+        method = "PATCH",
+        path = "/api/devices/${encodePathSegment(deviceKey)}",
+        authenticated = true,
+        body = JSONObject().put("name", name),
+        parser = { body -> body.optBoolean("success", false) },
+    )
+
     private suspend fun <T> request(
         method: String,
         path: String,

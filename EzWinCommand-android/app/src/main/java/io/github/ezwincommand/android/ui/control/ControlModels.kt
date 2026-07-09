@@ -14,6 +14,7 @@ sealed interface ControlUiState {
     data class Ready(
         val actions: List<ActionPlugin>,
         val devices: List<DeviceInfo>,
+        val currentDeviceKey: String? = null,
     ) : ControlUiState
     data class Error(
         val message: String,

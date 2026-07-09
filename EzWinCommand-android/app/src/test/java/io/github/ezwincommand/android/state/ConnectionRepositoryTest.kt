@@ -87,7 +87,7 @@ class ConnectionRepositoryTest {
 
     @Test
     fun `restoreSession clears key on unauthorized`() = runBlocking {
-        val store = MemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1") }
+        val store = MemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1", "Android") }
         val repo = ConnectionRepository(store) { _, _ -> FakeClient(FakeClient.Mode.Unauthorized) }
         val result = repo.restoreSession()
         assertTrue(result is RestoreResult.InvalidSavedSession)
@@ -96,7 +96,7 @@ class ConnectionRepositoryTest {
 
     @Test
     fun `restoreSession succeeds when actions are authorized`() = runBlocking {
-        val store = MemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1") }
+        val store = MemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1", "Android") }
         val repo = ConnectionRepository(store) { _, _ -> FakeClient(FakeClient.Mode.Success) }
         val result = repo.restoreSession()
         assertTrue(result is RestoreResult.Restored)
@@ -104,7 +104,7 @@ class ConnectionRepositoryTest {
 
     @Test
     fun `signOut clears local key`() {
-        val store = MemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1") }
+        val store = MemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1", "Android") }
         val repo = ConnectionRepository(store)
         repo.signOut()
         assertNull(store.getDeviceKey())
@@ -142,9 +142,11 @@ class ConnectionRepositoryTest {
     private class MemoryDeviceKeyStore : DeviceKeyStore {
         private var baseUrl: String? = null
         private var deviceKey: String? = null
+        private var deviceName: String? = null
         override fun getBaseUrl(): String? = baseUrl
         override fun getDeviceKey(): String? = deviceKey
-        override fun saveSession(baseUrl: String, deviceKey: String) { this.baseUrl = baseUrl.trim(); this.deviceKey = deviceKey.trim() }
-        override fun clearSession() { baseUrl = null; deviceKey = null }
+        override fun getDeviceName(): String? = deviceName
+        override fun saveSession(baseUrl: String, deviceKey: String, deviceName: String) { this.baseUrl = baseUrl.trim(); this.deviceKey = deviceKey.trim(); this.deviceName = deviceName.trim() }
+        override fun clearSession() { baseUrl = null; deviceKey = null; deviceName = null }
     }
 }

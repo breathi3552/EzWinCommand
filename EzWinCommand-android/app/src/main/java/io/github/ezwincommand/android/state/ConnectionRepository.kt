@@ -39,7 +39,7 @@ class ConnectionRepository(
             is ApiResult.Success -> {
                 val session = result.value.deviceKey?.trim().orEmpty()
                 if (result.value.success && session.isNotEmpty()) {
-                    keyStore.saveSession(normalized, session)
+                    keyStore.saveSession(normalized, session, name)
                     PairingResult.Paired(normalized, session)
                 } else {
                     PairingResult.Failed(result.value.message?.ifBlank { null } ?: "配对失败。", lockedOrInvalid = false)

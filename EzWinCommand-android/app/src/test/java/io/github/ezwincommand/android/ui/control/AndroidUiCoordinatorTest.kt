@@ -18,7 +18,7 @@ import org.junit.Test
 class AndroidUiCoordinatorTest {
     @Test
     fun `restore invalid does not overwrite draft and returns to main`() = runBlocking {
-        val store = InMemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1") }
+        val store = InMemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1", "Android") }
         val repo = ConnectionRepository(store) { _, _ -> FakeClient(FakeClient.Mode.Unauthorized) }
         val coordinator = AndroidUiCoordinator(repo) { error("unused") }
 
@@ -31,7 +31,7 @@ class AndroidUiCoordinatorTest {
 
     @Test
     fun `restore success opens control`() = runBlocking {
-        val store = InMemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1") }
+        val store = InMemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1", "Android") }
         val repo = ConnectionRepository(store) { _, _ -> FakeClient(FakeClient.Mode.Success) }
         val coordinator = AndroidUiCoordinator(repo) { error("unused") }
 
@@ -44,7 +44,7 @@ class AndroidUiCoordinatorTest {
 
     @Test
     fun `auth invalid returns main and clears session`() {
-        val store = InMemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1") }
+        val store = InMemoryDeviceKeyStore().apply { saveSession("http://192.168.1.10:8080", "key-1", "Android") }
         val repo = ConnectionRepository(store) { _, _ -> FakeClient(FakeClient.Mode.Success) }
         val coordinator = AndroidUiCoordinator(repo) { error("unused") }
 
@@ -83,18 +83,22 @@ class AndroidUiCoordinatorTest {
     private class InMemoryDeviceKeyStore : DeviceKeyStore {
         private var baseUrl: String? = null
         private var deviceKey: String? = null
+        private var deviceName: String? = null
 
         override fun getBaseUrl(): String? = baseUrl
         override fun getDeviceKey(): String? = deviceKey
+        override fun getDeviceName(): String? = deviceName
 
-        override fun saveSession(baseUrl: String, deviceKey: String) {
+        override fun saveSession(baseUrl: String, deviceKey: String, deviceName: String) {
             this.baseUrl = baseUrl.trim()
             this.deviceKey = deviceKey.trim()
+            this.deviceName = deviceName.trim()
         }
 
         override fun clearSession() {
             baseUrl = null
             deviceKey = null
+            deviceName = null
         }
     }
 }

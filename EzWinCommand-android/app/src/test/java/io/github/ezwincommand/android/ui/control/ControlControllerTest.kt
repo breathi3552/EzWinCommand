@@ -24,6 +24,13 @@ class ControlControllerTest {
     }
 
     @Test
+    fun `load marks current device key`() = runBlocking {
+        val controller = ControlController(fakeClient(devices = listOf(DeviceInfo("k", "手机", null, null))), currentDeviceKeyProvider = { "k" }, onAuthInvalid = {})
+        val state = controller.load() as ControlUiState.Ready
+        assertEquals("k", state.currentDeviceKey)
+    }
+
+    @Test
     fun `renders single action without sub actions`() = runBlocking {
         val controller = ControlController(fakeClient(actions = listOf(ActionPlugin("sleep", "睡眠", "desc", "1", emptyList()))), onAuthInvalid = {})
         val state = controller.load() as ControlUiState.Ready
@@ -69,6 +76,18 @@ class ControlControllerTest {
         assertEquals(1, authInvalidCount)
     }
 
+    @Test
+    fun `rename device returns true on success`() = runBlocking {
+        val controller = ControlController(fakeClient(), onAuthInvalid = {})
+        assertTrue(controller.renameDevice("k", "新手机"))
+    }
+
+    @Test
+    fun `rename device rejects blank names`() = runBlocking {
+        val controller = ControlController(fakeClient(), onAuthInvalid = {})
+        assertFalse(controller.renameDevice("k", "   "))
+    }
+
     private fun fakeClient(
         actions: List<ActionPlugin> = listOf(ActionPlugin("power", "电源", "desc", "1", listOf(SubAction("sleep", "睡眠")))),
         devices: List<DeviceInfo> = listOf(DeviceInfo("k", "手机", null, null)),
@@ -80,6 +99,7 @@ class ControlControllerTest {
             override suspend fun listDevices(): ApiResult<List<DeviceInfo>> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(devices)
             override suspend fun executeCommand(action: String, params: Map<String, Any?>): ApiResult<CommandResult> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(commandResult)
             override suspend fun revokeDevice(deviceKey: String): ApiResult<Boolean> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(true)
+            override suspend fun renameDevice(deviceKey: String, name: String): ApiResult<Boolean> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(true)
         }
     }
 }
