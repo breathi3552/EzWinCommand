@@ -15,6 +15,8 @@ CONFIG_FILE = Path(__file__).resolve().parent / "config.local.env"
 LEGACY_ENV_FILE = Path(__file__).resolve().parent / ".env"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
+DEFAULT_AUDIO_ENTER_DEVICE = "扬声器 INZONE H9 / INZONE H7 - Game"
+DEFAULT_AUDIO_EXIT_DEVICE = "扬声器（FocusriteUSBAudio）"
 
 
 
@@ -22,6 +24,10 @@ DEFAULT_PORT = 8080
 class Settings:
     host: str
     port: int
+    yy_room_id: str
+    steam_path: str
+    audio_enter_device: str
+    audio_exit_device: str
 
 
 # ── 内部实现 ──
@@ -39,7 +45,13 @@ def _auto_create_config() -> None:
         "# HOST=0.0.0.0 表示允许局域网设备访问；如只允许本机访问可改为 127.0.0.1\n"
         f"HOST={host}\n"
         "# 默认端口\n"
-        f"PORT={port}\n",
+        f"PORT={port}\n"
+        "# YY numeric room ID\n"
+        "YY_ROOM_ID=\n"
+        "# Steam executable path\n"
+        "STEAM_PATH=\n"
+        f"AUDIO_ENTER_DEVICE={DEFAULT_AUDIO_ENTER_DEVICE}\n"
+        f"AUDIO_EXIT_DEVICE={DEFAULT_AUDIO_EXIT_DEVICE}\n",
         encoding="utf-8",
     )
 
@@ -85,25 +97,36 @@ def parse_port(value: str | int) -> int:
     return port
 
 
+
+
+def _required_text(env: dict[str, str], key: str) -> str:
+    value = env.get(key, "").strip()
+    if not value:
+        raise ValueError(f"{key} 不能为空")
+    return value
+
+
 def _load_settings() -> Settings:
     """从文件加载配置，config.local.env 优先级高于 .env。"""
     _auto_create_config()
     env: dict[str, str] = {}
-    # 旧版 .env（低优先级）
     env.update(_parse_env_file(LEGACY_ENV_FILE))
-    # 主配置（高优先级）
     env.update(_parse_env_file(CONFIG_FILE))
-
     host = _normalize_host(env.get("HOST", DEFAULT_HOST))
     port = parse_port(env.get("PORT", DEFAULT_PORT))
-    return Settings(host=host, port=port)
+    room_id = env.get("YY_ROOM_ID", "").strip()
+    if room_id and not room_id.isdigit():
+        raise ValueError("YY_ROOM_ID 必须是纯数字或留空")
+    return Settings(host, port, room_id, env.get("STEAM_PATH", "").strip(), _required_text(env, "AUDIO_ENTER_DEVICE") if "AUDIO_ENTER_DEVICE" in env else DEFAULT_AUDIO_ENTER_DEVICE, _required_text(env, "AUDIO_EXIT_DEVICE") if "AUDIO_EXIT_DEVICE" in env else DEFAULT_AUDIO_EXIT_DEVICE)
 
-
-# ── 模块级导出（兼容 import config; config.HOST / config.PORT）──
 
 _settings: Settings = _load_settings()
 HOST: str = _settings.host
 PORT: int = _settings.port
+YY_ROOM_ID: str = _settings.yy_room_id
+STEAM_PATH: str = _settings.steam_path
+AUDIO_ENTER_DEVICE: str = _settings.audio_enter_device
+AUDIO_EXIT_DEVICE: str = _settings.audio_exit_device
 
 
 def override(host: str | None = None, port: int | None = None) -> Settings:

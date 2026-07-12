@@ -90,6 +90,25 @@ python app.py --port 9090
 
 注意：如果把 `HOST` 改成 `127.0.0.1`，手机和 Android App 都将无法访问；局域网访问应保持 `HOST=0.0.0.0`。
 
+## 电竞模式配置
+
+在 `EzWinCommand-server/config.local.env` 中配置以下键：
+
+| 配置键 | 用途 |
+|---|---|
+| `YY_ROOM_ID` | YY 目标房间号，仅允许纯数字，例如 `1450342043` |
+| `STEAM_PATH` | Steam 可执行文件路径 |
+| `AUDIO_ENTER_DEVICE` | 进入电竞模式时使用的音频设备名称 |
+| `AUDIO_EXIT_DEVICE` | 退出电竞模式时恢复的音频设备名称 |
+
+系统需要注册 `yy://` 协议。进入电竞模式时依次切换进入音频设备、构造并提交精确的 `yy://join` URI，等待 YY 进程就绪（短暂调度延迟）后启动 Steam/CS2。Steam 随 URI 已提交启动，不以每次进房确认作为启动门禁；YY 登录或验证码仍由用户人工完成，最终房间状态以 YY 页面观察为准。
+
+已验证的真实 Manual：房间 `1450342043` 在 YY 未运行时启动新进程（PID `23852`），用户确认已成功进入房间。该记录证明本次受控流程，不代表每次进入都无需用户确认。
+
+`AUDIO_ENTER_DEVICE` 和 `AUDIO_EXIT_DEVICE` 必须逐字匹配 Windows“声音设置”中显示的设备名称。修改配置后请重启 Server，配置才会加载。电竞模式仅建议在可信的 Windows 本机或可信局域网中使用。
+
+旧版 YY UI 搜索框、坐标输入与窗口自动化方案已废弃，当前实现无 fallback。
+
 ## Android App 局域网连接
 
 1. 在 PC 端打开 `http://localhost:<PORT>`。
