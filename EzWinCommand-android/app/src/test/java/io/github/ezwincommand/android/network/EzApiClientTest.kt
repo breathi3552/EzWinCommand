@@ -40,6 +40,12 @@ class EzApiClientTest {
     }
 
     @Test
+    fun `command timeout constant is five seconds while default remains five`() {
+        assertEquals(5_000, EzApiClient.COMMAND_READ_TIMEOUT_MILLIS)
+        val field = EzApiClient::class.java.getDeclaredField("timeoutMillis").apply { isAccessible = true }
+        assertEquals(5_000, field.getInt(EzApiClient("http://127.0.0.1:8080", deviceKeyProvider = { null })))
+    }
+    @Test
     fun `maps http error status and body message`() {
         val result = ApiResult.HttpError(403, "配对码无效或已锁定")
         assertEquals(403, result.status)

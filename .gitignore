@@ -32,6 +32,7 @@ docs/
 # 设备鉴权数据（运行时生成，包含本机配对 Key）
 **/agent/devices.json
 **/agent/plugins.json
+**/agent/command_tasks.json
 icon-candidates/
 # 测试产物
 test_screenshots/

@@ -32,6 +32,9 @@ app = FastAPI(title="EzWinCommand Server")
 dispatcher = Dispatcher(plugins_json_path=BASE_DIR / "agent" / "plugins.json")
 dispatcher.discover_plugins(BASE_DIR / "plugins", package="plugins")
 app.state.dispatcher = dispatcher
+from agent.command_tasks import CommandTaskStore, AsyncCommandService
+task_store = CommandTaskStore(BASE_DIR / "agent" / "command_tasks.json")
+app.state.async_command_service = AsyncCommandService(dispatcher, task_store)
 
 # —— 注册 API 路由 ——
 app.include_router(api_router)

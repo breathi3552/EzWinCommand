@@ -5,6 +5,7 @@ create_auth_middleware 工厂函数生成 ASGI 中间件，拦截 /api/* 路径�
 """
 import secrets
 import time
+import hashlib
 from typing import Optional
 
 from fastapi import Request
@@ -223,10 +224,10 @@ def create_auth_middleware(auth_manager: AuthManager):
             if path in _WHITELIST_PATHS:
                 await self._app(scope, receive, send)
                 return
-
-            # localhost 请求放行（PC 管理面板无需 Bearer 鉴权）
+            # localhost 请求放行，并注入固定内部 owner 摘要
             client_host = (scope.get("client") or ("", 0))[0]
             if is_local_host(client_host):
+                scope.setdefault("state", {})["device_digest"] = hashlib.sha256(b"ezwincommand:loopback").hexdigest()
                 await self._app(scope, receive, send)
                 return
 
@@ -246,16 +247,12 @@ def create_auth_middleware(auth_manager: AuthManager):
                 )
                 await response(scope, receive, send)
                 return
-
-            key = auth_header[7:]  # 去掉 "Bearer " 前缀
+            key = auth_header[7:]
             if not auth_manager.is_authorized(key):
-                response = JSONResponse(
-                    status_code=401,
-                    content={"detail": "未授权的设备密钥"},
-                )
+                response = JSONResponse(status_code=401, content={"detail": "未授权的设备密钥"})
                 await response(scope, receive, send)
                 return
-
+            scope.setdefault("state", {})["device_digest"] = hashlib.sha256(key.encode()).hexdigest()
             await self._app(scope, receive, send)
 
     return _AuthMiddleware

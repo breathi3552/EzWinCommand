@@ -41,7 +41,21 @@ class MainActivity : AppCompatActivity() {
     private val coordinator: AndroidUiCoordinator by lazy {
         AndroidUiCoordinator(connectionRepository) { baseUrl -> createController(baseUrl) }
     }
+    private var activeController: ControlController? = null
+    private var activeBaseUrl: String? = null
     private var hideTopMessageRunnable: Runnable? = null
+
+    override fun onStart() {
+        super.onStart()
+        activeController?.trackAllPending(lifecycleScope) { result ->
+            runOnUiThread { showTopMessage(if (result.success) result.message else errorMessage(result.message)) }
+        }
+    }
+
+    override fun onStop() {
+        activeController?.cancelTracking()
+        super.onStop()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -197,6 +211,9 @@ class MainActivity : AppCompatActivity() {
         binding.controlContainer.addView(screen)
         lifecycleScope.launch {
             val controller = createController(baseUrl)
+            activeController = controller
+            activeBaseUrl = baseUrl
+            controller.trackAllPending(lifecycleScope) { result -> runOnUiThread { showTopMessage(if (result.success) result.message else errorMessage(result.message)) } }
             val controlState = controller.load()
             coordinator.updateControlState(baseUrl, controlState)
             renderControl(screen, controller, baseUrl, controlState)
@@ -216,6 +233,9 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 val result = controller.sendAction(command)
                 showTopMessage(screen.showResult(result))
+                if (result.commandId != null && result.status != "succeeded" && result.status != "failed") {
+                    controller.trackPending(command, lifecycleScope) { tracked -> runOnUiThread { showTopMessage(if (tracked.success) tracked.message else errorMessage(tracked.message)) } }
+                }
                 if (!result.success) {
                     screen.render(ControlUiState.Error(result.message, authInvalid = false), actionInvoker, revokeInvoker, renameInvoker) { returnToPairing(baseUrl) }
                 }
@@ -332,11 +352,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun createController(baseUrl: String): ControlController {
         val apiClient = EzApiClient(baseUrl, { deviceKeyStore.getDeviceKey() }, timeoutMillis = 5_000)
-        return ControlController(apiClient, currentDeviceKeyProvider = { deviceKeyStore.getDeviceKey() }) {
+        val pendingStore = io.github.ezwincommand.android.storage.PendingCommandStore(
+            getSharedPreferences("ezwincommand_pending", MODE_PRIVATE),
+            baseUrl,
+            deviceKeyStore.getDeviceKey(),
+        )
+        return ControlController(apiClient, currentDeviceKeyProvider = { deviceKeyStore.getDeviceKey() }, onAuthInvalid = {
             lifecycleScope.launch {
                 renderEffect(coordinator.onAuthInvalid())
                 showTopMessage(errorMessage(getString(R.string.main_restore_failed)))
             }
-        }
+        }, pendingStore = pendingStore)
     }
 }

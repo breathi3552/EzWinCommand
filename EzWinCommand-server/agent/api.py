@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from agent.dispatcher import Dispatcher
 from agent.auth import is_local_host
+from agent.command_tasks import AsyncCommandService
 
 router = APIRouter()
 
@@ -44,13 +45,51 @@ async def ping():
 
 
 
-
 @router.post("/api/command")
 async def execute_command(body: CommandRequest, request: Request):
-    """统一命令入口。"""
+    """统一命令入口；电竞命令仅在校验通过后异步入队。"""
+    digest = request.scope.get("state", {}).get("device_digest", "")
+    if body.action == "esports_mode":
+        dispatcher = _get_dispatcher(request)
+        params = body.params
+        sub_action = params.get("sub_action") if isinstance(params, dict) else None
+        if hasattr(dispatcher, "list_plugins"):
+            plugin = next((item for item in dispatcher.list_plugins(include_disabled=True)
+                           if item.get("name") == "esports_mode"), None)
+            if plugin is None:
+                return JSONResponse(status_code=404, content={"detail": "插件不存在: esports_mode"})
+            if not plugin.get("enabled") or plugin.get("load_error"):
+                return JSONResponse(status_code=409, content={"detail": "插件已禁用或不可用"})
+            # Dispatcher 元数据使用字典列表；只允许声明过的 id，避免将整个字典与字符串比较。
+            sub_actions = plugin.get("sub_actions") or []
+            sub_action_ids = {
+                item.get("id") for item in sub_actions
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            if not isinstance(sub_action, str) or sub_action not in sub_action_ids:
+                return JSONResponse(status_code=422, content={"detail": "无效的 sub_action"})
+        service: AsyncCommandService = request.app.state.async_command_service
+        record, _ = service.submit(digest, body.action, params)
+        if record.owner_digest != digest:
+            return JSONResponse(status_code=409, content={"detail":"相同命令正在执行"})
+        return JSONResponse(status_code=202, content={"command_id":record.command_id,"status":record.status})
     dispatcher = _get_dispatcher(request)
     result = dispatcher.execute(body.action, body.params)
     return {"success": result.success, "message": result.message, "data": result.data}
+
+@router.get("/api/commands/{command_id}")
+async def get_command(command_id: str, request: Request):
+    digest = request.scope.get("state", {}).get("device_digest", "")
+    record = request.app.state.async_command_service.get(command_id, digest)
+    if record is None:
+        return JSONResponse(status_code=404, content={"detail": "任务不存在"})
+    # 仅暴露任务状态与结果字段，避免泄露所有者、命令参数等敏感内部信息。
+    serialized = record.to_dict()
+    public_fields = (
+        "command_id", "status", "message", "data", "error",
+        "created_at", "updated_at", "expires_at",
+    )
+    return {field: serialized.get(field) for field in public_fields}
 
 
 @router.get("/api/actions")

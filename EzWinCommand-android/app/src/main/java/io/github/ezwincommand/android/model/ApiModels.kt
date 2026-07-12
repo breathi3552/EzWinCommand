@@ -33,6 +33,21 @@ data class CommandResult(
     val success: Boolean,
     val message: String,
     val data: Map<String, Any?>,
+    val commandId: String? = null,
+    val status: String? = null,
+)
+
+data class AsyncCommandAccepted(
+    val commandId: String,
+    val status: String,
+)
+
+data class CommandStatus(
+    val commandId: String,
+    val status: String,
+    val message: String? = null,
+    val data: Map<String, Any?>? = null,
+    val error: Map<String, Any?>? = null,
 )
 
 data class DeviceInfo(

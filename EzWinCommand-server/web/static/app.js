@@ -83,6 +83,132 @@ async function authFetchJson(url, options = {}, errorElementId = "ext-error") {
     setUiError(errorElementId, "");
     return data;
 }
+const COMMAND_POLL_INTERVAL_MS = 1000;
+const COMMAND_POLL_LIMIT = 60;
+const pendingCommandTimers = new Map();
+function pendingCommandKey(action, params) { return `ez_pending_command_${action}_${params && params.sub_action ? params.sub_action : ""}`; }
+function commandStatusMessage(status) { return status.status === "succeeded" ? (status.message || "命令执行成功") : ((status.error && status.error.message) || status.message || "命令执行失败"); }
+const pendingCommandInflight = new Map();
+async function submitAndTrackCommand(action, params = {}, opts = {}) {
+    const key = pendingCommandKey(action, params);
+    const active = pendingCommandInflight.get(key);
+    if (active) return active;
+    const run = (async () => {
+        const { errorElementId = "ext-error", authorized = false } = opts;
+        const request = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, params }) };
+        let resp, data;
+        const existing = sessionStorage.getItem(key);
+        if (existing) {
+            resp = { status: 202, ok: true };
+            data = { command_id: existing, status: "queued" };
+        } else {
+            resp = authorized ? await authFetch("/api/command", request) : await fetch("/api/command", request);
+            data = await resp.json().catch(() => ({}));
+        }
+        if (resp.status === 401 || resp.status === 403) {
+            if (authorized) { clearStoredKey(); setUiError(errorElementId, "授权已失效，请重新配对"); await extReturnToPairing(); }
+            throw new Error("授权已失效，请重新配对");
+        }
+        if (!resp.ok) { const msg = data.message || data.detail || `请求失败 (${resp.status})`; setUiError(errorElementId, msg); throw new Error(msg); }
+        if (resp.status !== 202) { console.log(action, data); return; }
+        const id = data.command_id;
+        if (!id) throw new Error("服务器未返回 command_id");
+        sessionStorage.setItem(key, id);
+        setUiError(errorElementId, "已提交，正在执行…");
+        const deadlineNow = () => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
+        const deadlineAt = deadlineNow() + COMMAND_POLL_LIMIT * COMMAND_POLL_INTERVAL_MS;
+        return await new Promise((resolve, reject) => {
+            let timer = null;
+            let settled = false;
+            let activeController = null;
+            const finish = (value, error = null) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                if (activeController) {
+                    try { activeController.abort(); } catch (_) { /* ignore */ }
+                    activeController = null;
+                }
+                pendingCommandTimers.delete(key);
+                error ? reject(error) : resolve(value);
+            };
+            const softTimeout = () => {
+                setUiError(errorElementId, "仍在服务端执行，可稍后继续查询");
+                finish({ status: "queued", command_id: id });
+            };
+            const poll = async () => {
+                if (settled) return;
+                const remainingBefore = deadlineAt - deadlineNow();
+                if (remainingBefore <= 0) {
+                    softTimeout();
+                    return;
+                }
+                const controller = new AbortController();
+                activeController = controller;
+                // 单次请求只受总 deadline 剩余时间约束；轮询间隔仅用于终态前的等待。
+                const abortTimer = setTimeout(() => {
+                    try { controller.abort(); } catch (_) { /* ignore */ }
+                }, Math.max(1, remainingBefore));
+                try {
+                    const fetchOpts = { signal: controller.signal };
+                    const r = authorized
+                        ? await authFetch(`/api/commands/${encodeURIComponent(id)}`, fetchOpts)
+                        : await fetch(`/api/commands/${encodeURIComponent(id)}`, fetchOpts);
+                    if (settled) return;
+                    const s = await r.json().catch(() => ({}));
+                    if (deadlineNow() >= deadlineAt) {
+                        softTimeout();
+                        return;
+                    }
+                    if (r.status === 404) {
+                        sessionStorage.removeItem(key);
+                        setUiError(errorElementId, "命令已过期，请重新提交");
+                        finish(null, new Error("命令已过期，请重新提交"));
+                        return;
+                    }
+                    if (r.status === 401 || r.status === 403) {
+                        if (authorized) {
+                            clearStoredKey();
+                            setUiError(errorElementId, "授权已失效，请重新配对");
+                            await extReturnToPairing();
+                        }
+                        finish(null, new Error("授权已失效，请重新配对"));
+                        return;
+                    }
+                    if (!r.ok) throw new Error(s.message || s.detail || `请求失败 (${r.status})`);
+                    if (s.status === "succeeded" || s.status === "failed") {
+                        sessionStorage.removeItem(key);
+                        setUiError(errorElementId, commandStatusMessage(s));
+                        console.log(action, s);
+                        finish(s);
+                        return;
+                    }
+                } catch (e) {
+                    if (settled) return;
+                    if (deadlineNow() >= deadlineAt) {
+                        softTimeout();
+                        return;
+                    }
+                    // abort/network 错误：未到总 deadline 时继续下一轮
+                } finally {
+                    clearTimeout(abortTimer);
+                    if (activeController === controller) activeController = null;
+                }
+                if (settled) return;
+                const remaining = deadlineAt - deadlineNow();
+                if (remaining <= 0) {
+                    softTimeout();
+                    return;
+                }
+                timer = setTimeout(poll, Math.min(COMMAND_POLL_INTERVAL_MS, remaining));
+                pendingCommandTimers.set(key, timer);
+            };
+            poll();
+        });
+    })();
+    pendingCommandInflight.set(key, run);
+    try { return await run; } finally { pendingCommandInflight.delete(key); }
+}
 
 // ============================================================
 // PC 管理面板
@@ -381,16 +507,8 @@ async function pcLoadActions() {
 
 /** 发送命令（PC 端，无需鉴权） */
 async function pcSendCommand(action, params = {}) {
-    try {
-        const result = await fetchJson("/api/command", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action, params }),
-        }, "pc-error");
-        console.log(action, result);
-    } catch (e) {
-        console.error("命令发送失败:", e);
-    }
+    try { await submitAndTrackCommand(action, params, { errorElementId: "pc-error" }); }
+    catch (e) { console.error("命令发送失败:", e); }
 }
 
 /** 初始化 PC 管理面板 */
@@ -577,16 +695,8 @@ async function extLoadActions() {
 }
 
 async function extSendCommand(action, params = {}) {
-    try {
-        const result = await authFetchJson("/api/command", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action, params }),
-        });
-        console.log(action, result);
-    } catch (e) {
-        console.error("命令发送失败:", e);
-    }
+    try { await submitAndTrackCommand(action, params, { errorElementId: "ext-error", authorized: true }); }
+    catch (e) { console.error("命令发送失败:", e); }
 }
 
 // ---- 外部设备管理 ----

@@ -105,6 +105,8 @@ python app.py --port 9090
 
 已验证的真实 Manual：房间 `1450342043` 在 YY 未运行时启动新进程（PID `23852`），用户确认已成功进入房间。该记录证明本次受控流程，不代表每次进入都无需用户确认。
 
+电竞模式属于长任务：手机/浏览器点击后服务端立即受理（HTTP 202），客户端轮询执行结果，而不是在单次短超时请求里等完整流程结束。若提示“仍在服务端执行”，可稍后在同一客户端继续查询；最终是否进房仍以 YY 页面为准。
+
 `AUDIO_ENTER_DEVICE` 和 `AUDIO_EXIT_DEVICE` 必须逐字匹配 Windows“声音设置”中显示的设备名称。修改配置后请重启 Server，配置才会加载。电竞模式仅建议在可信的 Windows 本机或可信局域网中使用。
 
 旧版 YY UI 搜索框、坐标输入与窗口自动化方案已废弃，当前实现无 fallback。
@@ -212,6 +214,8 @@ netsh advfirewall firewall add rule name="EzWinCommand 9090" dir=in action=allow
 - [x] WebView 插件布局已调优：共享渲染函数、mobile-first grid、兼容新旧插件字段。
 - [ ] 插件参数仍是自由字典，后续可引入参数 Schema。
 - [x] Android App 已支持局域网连接；手机浏览器入口仍可继续使用。
+
+- [x] 电竞等长任务改为异步受理 + 状态轮询（`202` + `/api/commands/{id}`）；完整真机手测仍建议用户在可信局域网自行确认。
 - [ ] 可增加更多插件：锁屏、睡眠、Steam、OBS、宏命令。
 
 ## 许可证

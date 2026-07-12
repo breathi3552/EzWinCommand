@@ -7,6 +7,9 @@ import io.github.ezwincommand.android.model.SubAction
 import io.github.ezwincommand.android.network.ApiResult
 import io.github.ezwincommand.android.network.EzApiClient
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -52,6 +55,26 @@ class ControlControllerTest {
         assertFalse(result.success)
         assertEquals("失败信息", result.message)
     }
+    @Test
+    fun `rejects duplicate command while first is running`() = runBlocking {
+        var calls = 0
+        val client = object : EzApiClient("http://192.168.1.10:8080", deviceKeyProvider = { "k" }) {
+            override suspend fun executeCommand(action: String, params: Map<String, Any?>): ApiResult<CommandResult> {
+                calls++
+                delay(50)
+                return ApiResult.Success(CommandResult(true, "ok", emptyMap()))
+            }
+        }
+        val controller = ControlController(client, onAuthInvalid = {})
+        coroutineScope {
+            val first = async { controller.sendAction(ActionCommand("power")) }
+            val second = async { controller.sendAction(ActionCommand("power")) }
+            first.await()
+            assertFalse(second.await().success)
+        }
+        assertEquals(1, calls)
+        assertTrue(controller.sendAction(ActionCommand("power")).success)
+    }
 
     @Test
     fun `invokes auth invalid callback on 401 and 403`() = runBlocking {
@@ -86,6 +109,28 @@ class ControlControllerTest {
     fun `rename device rejects blank names`() = runBlocking {
         val controller = ControlController(fakeClient(), onAuthInvalid = {})
         assertFalse(controller.renameDevice("k", "   "))
+    }
+
+    @Test
+    fun `poll parse error returns explicit message and keeps pending`() = runBlocking {
+        val client = object : EzApiClient("http://192.168.1.10:8080", deviceKeyProvider = { "k" }) {
+            override suspend fun getCommandStatus(commandId: String): ApiResult<io.github.ezwincommand.android.model.CommandStatus> = ApiResult.ParseError("解析响应失败")
+        }
+        val controller = ControlController(client, onAuthInvalid = {})
+        val result = controller.pollPending(ActionCommand("power"), "cmd-1", maxPolls = 1, pollDelayMs = 0)
+        assertEquals("状态响应解析失败，可稍后重试", result?.message)
+        assertEquals("parse_error", result?.status)
+    }
+
+    @Test
+    fun `poll network error remains running`() = runBlocking {
+        val client = object : EzApiClient("http://192.168.1.10:8080", deviceKeyProvider = { "k" }) {
+            override suspend fun getCommandStatus(commandId: String): ApiResult<io.github.ezwincommand.android.model.CommandStatus> = ApiResult.NetworkError("网络请求失败")
+        }
+        val controller = ControlController(client, onAuthInvalid = {})
+        val result = controller.pollPending(ActionCommand("power"), "cmd-1", maxPolls = 1, pollDelayMs = 0)
+        assertEquals("仍在服务端执行，可稍后继续查询", result?.message)
+        assertEquals("running", result?.status)
     }
 
     private fun fakeClient(

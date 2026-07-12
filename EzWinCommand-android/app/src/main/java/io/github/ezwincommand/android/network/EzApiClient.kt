@@ -4,6 +4,7 @@ import io.github.ezwincommand.android.AppConstants
 import io.github.ezwincommand.android.model.ActionPlugin
 import io.github.ezwincommand.android.model.AuthorizeResult
 import io.github.ezwincommand.android.model.CommandResult
+import io.github.ezwincommand.android.model.CommandStatus
 import io.github.ezwincommand.android.model.DeviceInfo
 import io.github.ezwincommand.android.model.PairingStatus
 import io.github.ezwincommand.android.model.PingResponse
@@ -22,6 +23,10 @@ open class EzApiClient(
     private val deviceKeyProvider: () -> String?,
     private val timeoutMillis: Int = 5_000,
 ) {
+    companion object {
+        const val COMMAND_READ_TIMEOUT_MILLIS: Int = 5_000
+        private val COMMAND_STATUSES = setOf("queued", "running", "succeeded", "failed")
+    }
     internal val normalizedBaseUrl: String = normalizeBaseUrl(baseUrl)
 
     open suspend fun ping(): ApiResult<PingResponse> = request(
@@ -67,19 +72,37 @@ open class EzApiClient(
         authenticated = true,
         parser = { body -> parseActionPlugins(body.optJSONArray("actions")) },
     )
-
     open suspend fun executeCommand(action: String, params: Map<String, Any?> = emptyMap()): ApiResult<CommandResult> = request(
         method = "POST",
         path = "/api/command",
         authenticated = true,
-        body = JSONObject()
-            .put("action", action)
-            .put("params", mapToJsonObject(params)),
+        body = JSONObject().put("action", action).put("params", mapToJsonObject(params)),
+        successCodes = setOf(200, 202),
         parser = { body ->
+            val id = body.optStringOrNull("command_id")
             CommandResult(
-                success = body.optBoolean("success", false),
+                success = body.optBoolean("success", id == null),
                 message = body.optString("message", ""),
                 data = jsonObjectToMap(body.optJSONObject("data") ?: JSONObject()),
+                commandId = id,
+                status = body.optStringOrNull("status"),
+            )
+        },
+    )
+
+    open suspend fun getCommandStatus(commandId: String): ApiResult<CommandStatus> = request(
+        method = "GET",
+        path = "/api/commands/${encodePathSegment(commandId)}",
+        authenticated = true,
+        parser = { body ->
+            val rawStatus = body.optStringOrNull("status") ?: throw IllegalArgumentException("缺少 status")
+            if (rawStatus !in COMMAND_STATUSES) throw IllegalArgumentException("未知 status: $rawStatus")
+            CommandStatus(
+                commandId = body.optString("command_id", commandId),
+                status = rawStatus,
+                message = body.optStringOrNull("message"),
+                data = body.optJSONObject("data")?.let { jsonObjectToMap(it) },
+                error = body.optJSONObject("error")?.let { jsonObjectToMap(it) },
             )
         },
     )
@@ -110,6 +133,7 @@ open class EzApiClient(
         method: String,
         path: String,
         authenticated: Boolean,
+        readTimeoutMillis: Int = timeoutMillis,
         body: JSONObject? = null,
         successCodes: Set<Int> = setOf(200),
         parser: (JSONObject) -> T,
@@ -117,8 +141,8 @@ open class EzApiClient(
         val connection = try {
             openConnection(path).apply {
                 requestMethod = method
+                readTimeout = readTimeoutMillis
                 connectTimeout = timeoutMillis
-                readTimeout = timeoutMillis
                 doInput = true
                 if (body != null) {
                     doOutput = true
