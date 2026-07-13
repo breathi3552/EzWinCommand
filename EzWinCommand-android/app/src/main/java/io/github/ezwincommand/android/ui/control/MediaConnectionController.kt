@@ -33,12 +33,14 @@ class MediaConnectionController(
     private var coverJob: Job? = null
     private var loadedCoverPath: String? = null
     private var ownerIdentity: Any = this
+    private var lastAppliedRevision = -1L
 
     fun start(owner: Any = this) {
         invalidate()
         ownerIdentity = owner
         val generation = generationCounter.incrementAndGet()
         activeGeneration = generation
+        lastAppliedRevision = -1L
         loopJob = scope.launch { runConnectionLoop(generation, owner) }
     }
 
@@ -125,7 +127,8 @@ class MediaConnectionController(
     }
 
     private fun applyStateOnMain(generation: Long, owner: Any, state: MediaState) {
-        if (!isCurrent(generation, owner)) return
+        if (!isCurrent(generation, owner) || state.revision < lastAppliedRevision) return
+        lastAppliedRevision = state.revision
         onState(state)
         val path = state.cover
         if (path == loadedCoverPath) return

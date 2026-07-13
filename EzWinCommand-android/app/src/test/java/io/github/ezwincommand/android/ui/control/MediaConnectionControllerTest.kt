@@ -122,4 +122,24 @@ class MediaConnectionControllerTest {
         assertEquals(1, covers)
         controller.close()
     }
+
+    @Test
+    fun `older SSE revision cannot restore stale timeout after recovery`() = runTest {
+        val events = mutableListOf<(MediaState) -> Unit>()
+        val applied = mutableListOf<MediaState>()
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
+            override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 2, error = null))
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+                events += onEvent
+                return Closeable { }
+            }
+        }
+        val controller = MediaConnectionController(client, "http://127.0.0.1:8080", this, StandardTestDispatcher(testScheduler), { applied += it }, { _, _ -> }, {}, {})
+        controller.start("owner")
+        runCurrent()
+        events.single()(MediaState.LOADING.copy(revision = 1, error = "媒体服务初始化超时"))
+        runCurrent()
+        assertTrue(applied.all { it.error == null })
+        controller.close()
+    }
 }

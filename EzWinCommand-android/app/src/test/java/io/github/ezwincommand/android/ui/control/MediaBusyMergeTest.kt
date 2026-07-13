@@ -33,6 +33,25 @@ class MediaBusyMergeTest {
     }
 
     @Test
+    fun `authoritative success clears historical initialization timeout`() {
+        val failed = displayed.copy(error = "媒体服务初始化超时")
+        val recovered = authoritative.copy(error = null)
+
+        val merged = mergeAuthoritativeMedia(failed, recovered, volumeBusy = false)
+
+        assertEquals(null, merged.error)
+    }
+
+    @Test
+    fun `authoritative current failure remains visible after merge`() {
+        val failed = authoritative.copy(error = "媒体服务连接失败")
+
+        val merged = mergeAuthoritativeMedia(displayed.copy(error = "媒体服务初始化超时"), failed, volumeBusy = false)
+
+        assertEquals("媒体服务连接失败", merged.error)
+    }
+
+    @Test
     fun `idle converges to authoritative volume`() {
         assertEquals(20, mergeAuthoritativeMedia(displayed, authoritative, volumeBusy = false).volume)
     }

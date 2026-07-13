@@ -323,47 +323,93 @@ class MediaService:
 
     async def _run(self) -> None:
         self._stop_requested = asyncio.Event()
-        if self._stop_signal.is_set(): self._stop_requested.set()
+        if self._stop_signal.is_set():
+            self._stop_requested.set()
         stop_task = asyncio.create_task(self._stop_requested.wait())
-        bootstrap = asyncio.create_task(self._bootstrap()); deadline = asyncio.create_task(asyncio.sleep(STARTUP_DEADLINE))
-        done, _ = await asyncio.wait({bootstrap, deadline, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-        if bootstrap in done and not bootstrap.cancelled() and bootstrap.exception() is None: self._media_ready.set()
-        if deadline in done and bootstrap not in done: self._publish_error("媒体服务初始化超时")
-        self._readiness_decision.set()
-        async def late() -> None:
-            try: await bootstrap
-            except Exception: return
-            if stop_task.done():
-                self._media_ready.clear()
-                if self._adapter is not None: await self._adapter.close(); self._adapter = None
-                return
-            self._media_ready.set(); self._publish_error(None); await self._poll()
-        poll = asyncio.create_task(self._poll()) if bootstrap.done() and bootstrap.exception() is None and not stop_task.done() else asyncio.create_task(late())
-        await stop_task
-        if not bootstrap.done():
-            try:
-                await bootstrap
-            except Exception:
-                logger.exception("媒体服务停止时 bootstrap 失败: operation=bootstrap")
-        poll.cancel(); await asyncio.gather(poll, return_exceptions=True)
-        if self._adapter is not None:
-            try: await self._adapter.close()
-            except Exception: logger.exception("释放媒体平台对象失败: operation=close")
-            self._adapter = None
-        deadline.cancel(); await asyncio.gather(deadline, return_exceptions=True)
-        stop_task.cancel()
+        poll: asyncio.Task[None] | None = None
+        first_attempt = True
+        try:
+            while not stop_task.done():
+                attempt = asyncio.create_task(self._bootstrap())
+                done, _ = await asyncio.wait(
+                    {attempt, stop_task},
+                    timeout=STARTUP_DEADLINE if first_attempt else None,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stop_task in done:
+                    attempt.cancel()
+                    await asyncio.gather(attempt, return_exceptions=True)
+                    break
+                if attempt not in done:
+                    # The first deadline is the only readiness decision.  The
+                    # cancelled WinRT await is required to be cancellation-safe.
+                    self._publish_error("媒体服务初始化超时")
+                    self._readiness_decision.set()
+                    first_attempt = False
+                    attempt.cancel()
+                    await asyncio.gather(attempt, return_exceptions=True)
+                    if await self._retry_sleep(stop_task):
+                        break
+                    continue
+                first_attempt = False
+                if attempt.cancelled() or attempt.exception() is not None:
+                    if await self._retry_sleep(stop_task):
+                        break
+                    continue
+                self._media_ready.set()
+                self._readiness_decision.set()
+                self._publish_error(None)
+                poll = asyncio.create_task(self._poll())
+                await stop_task
+        finally:
+            if poll is not None:
+                poll.cancel()
+                await asyncio.gather(poll, return_exceptions=True)
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+            if self._adapter is not None:
+                try:
+                    await self._adapter.close()
+                except Exception:
+                    logger.exception("释放媒体平台对象失败: operation=close")
+                self._adapter = None
+
+    async def _retry_sleep(self, stop_task: asyncio.Task[bool]) -> bool:
+        delay = asyncio.create_task(asyncio.sleep(0.1))
+        done, _ = await asyncio.wait({delay, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        if stop_task in done:
+            delay.cancel()
+            await asyncio.gather(delay, return_exceptions=True)
+            return True
+        return False
 
     async def _bootstrap(self) -> None:
+        adapter = self._adapter_factory()
+        installed = False
+        healthy = False
         try:
-            self._adapter = self._adapter_factory()
             logger.info("媒体服务阶段开始: operation=initialize")
-            await self._adapter.initialize(self._schedule_refresh)
+            await adapter.initialize(self._schedule_refresh)
+            if self._stop_requested is not None and self._stop_requested.is_set():
+                return
+            self._adapter = adapter
+            installed = True
             logger.info("媒体服务阶段开始: operation=read_media")
             await self._refresh()
+            healthy = True
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("媒体服务初始化失败: operation=initialize/read_media/read_audio")
-            self._publish_error("媒体服务初始化失败")
             raise
+        finally:
+            if installed and not healthy and self._adapter is adapter:
+                self._adapter = None
+            if not installed or not healthy:
+                try:
+                    await adapter.close()
+                except Exception:
+                    logger.exception("释放失败的媒体 adapter 失败")
     async def _poll(self) -> None:
         while True:
             await asyncio.sleep(0.5)

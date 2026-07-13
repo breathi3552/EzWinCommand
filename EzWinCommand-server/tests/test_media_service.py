@@ -53,52 +53,57 @@ class FakeAdapter:
 
 
 def test_initialize_hang_is_bounded_and_submit_unavailable() -> None:
-    gate = threading.Event()
+    started = threading.Event()
 
     class Hanging(FakeAdapter):
         async def initialize(self, notify) -> None:
-            await asyncio.to_thread(gate.wait)
+            started.set()
+            await asyncio.Event().wait()
 
     adapter = Hanging()
     service = MediaService(lambda: adapter)
     service.start()
     try:
+        assert started.wait(1)
         assert service.snapshot().error == "媒体服务初始化超时"
         assert service.submit("play").result(timeout=0.2).message == "媒体服务不可用"
-        service.stop(timeout=0.2)
-        gate.set()
-        service.stop(timeout=1.0)
-        assert service._thread is None
-        assert adapter.closed is True
-        assert adapter.close_count == 1
-        assert adapter.close_threads == ["EzMediaLoop"]
     finally:
-        gate.set()
         service.stop(timeout=1.0)
+    assert adapter.closed is True
+    assert adapter.close_count == 1
+    assert adapter.close_threads == ["EzMediaLoop"]
 
 def test_initialize_late_completion_recovers_without_restart() -> None:
-    gate = threading.Event()
+    attempts = 0
 
-    class HangingInitialize(FakeAdapter):
+    class RetryAdapter(FakeAdapter):
         async def initialize(self, notify) -> None:
-            await asyncio.to_thread(gate.wait)
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.Event().wait()
 
-    adapter = HangingInitialize()
-    service = MediaService(lambda: adapter)
+    adapters: list[RetryAdapter] = []
+    def make_adapter() -> RetryAdapter:
+        adapter = RetryAdapter()
+        adapters.append(adapter)
+        return adapter
+    service = MediaService(make_adapter)
     service.start()
     try:
         assert service.snapshot().error == "媒体服务初始化超时"
         assert service.submit("play").result(timeout=0.2).success is False
-        gate.set()
         for _ in range(30):
             if service.snapshot().error is None and service.snapshot().available:
                 break
             threading.Event().wait(0.1)
+        assert attempts >= 2
         assert service.snapshot().error is None
         assert service.submit("play").result(timeout=1).success is True
     finally:
-        gate.set()
         service.stop(timeout=1.0)
+    assert len(adapters) >= 2
+    assert all(item.close_count == 1 for item in adapters)
 
 def test_stop_before_start_and_repeat_stop() -> None:
     service = MediaService(FakeAdapter)
@@ -106,7 +111,6 @@ def test_stop_before_start_and_repeat_stop() -> None:
     service.start()
     service.stop(timeout=1.0)
     service.stop(timeout=0.1)
-
 def test_late_bootstrap_exception_closes_adapter() -> None:
     gate = threading.Event()
     adapter = FakeAdapter()
