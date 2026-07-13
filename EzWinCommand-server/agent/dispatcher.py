@@ -8,7 +8,7 @@ import json
 from typing import Any
 
 
-from plugins.base import CommandResult
+from plugins.base import BasePlugin, CommandResult
 from plugins.loader import PluginLoader
 logger = logging.getLogger(__name__)
 
@@ -59,15 +59,19 @@ class Dispatcher:
         self,
         plugin_dir: str | Path = "plugins",
         package: str = "plugins",
+        exclude: set[str] | None = None,
     ) -> None:
         """扫描并加载插件目录。"""
-        self._loader.discover(plugin_dir, package=package)
+        self._loader.discover(plugin_dir, package=package, exclude=exclude)
 
+    def register_plugin(self, plugin: BasePlugin) -> None:
+        """注册依赖注入的插件，不写入启用状态文件。"""
+        self._loader.register(plugin)
     def execute(self, action: str, params: dict[str, Any] | None = None) -> CommandResult:
         """分发命令到对应插件。
 
         Args:
-            action: 插件注册名（如 "calculator", "volume"）。
+            action: 插件注册名（如 "calculator", "media"）。
             params: 插件所需的参数字典。
 
         Returns:
@@ -82,8 +86,9 @@ class Dispatcher:
 
         try:
             return plugin.execute(params or {})
-        except Exception as exc:
-            return CommandResult(success=False, message=f"插件执行异常: {exc}")
+        except Exception:
+            logger.exception("插件执行异常: action=%s", action)
+            return CommandResult(success=False, message="插件执行异常")
 
     def list_plugins(self, include_disabled: bool = True) -> list[dict[str, Any]]:
         """返回所有已注册插件的完整信息。

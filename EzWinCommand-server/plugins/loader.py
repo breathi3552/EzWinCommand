@@ -23,7 +23,12 @@ class PluginLoader:
         self._enabled: dict[str, bool] = enabled or {}
         self.errors: list[dict[str, str]] = []
 
-    def discover(self, plugin_dir: str | Path, package: str = "plugins") -> None:
+    def discover(
+        self,
+        plugin_dir: str | Path,
+        package: str = "plugins",
+        exclude: set[str] | None = None,
+    ) -> None:
         """扫描 plugin_dir 目录，加载所有合法插件。
 
         plugin_dir 可为绝对 Path；package 用于构造 import 路径，避免依赖当前工作目录。
@@ -37,6 +42,8 @@ class PluginLoader:
         for py_file in root.glob("*.py"):
             if py_file.name.startswith("_"):
                 continue  # 跳过 __init__.py 和私有模块
+            if py_file.stem in (exclude or set()):
+                continue
 
             module_path = f"{package}.{py_file.stem}"
             module_name = py_file.stem
@@ -67,14 +74,17 @@ class PluginLoader:
                     })
                     continue
 
-                if not plugin.name:
-                    logger.warning("插件 %s 未设置 name，已跳过", attr_name)
-                    continue
-                if plugin.name in self.plugins:
-                    logger.warning("插件名冲突: %s，后加载的覆盖先加载的", plugin.name)
+                self.register(plugin)
 
-                self.plugins[plugin.name] = plugin
-                logger.info("已加载插件: %s (%s)", plugin.name, attr_name)
+    def register(self, plugin: BasePlugin) -> None:
+        """注册已构造插件，复用 discovery 的名称与冲突语义。"""
+        if not plugin.name:
+            logger.warning("插件 %s 未设置 name，已跳过", type(plugin).__name__)
+            return
+        if plugin.name in self.plugins:
+            logger.warning("插件名冲突: %s，后加载的覆盖先加载的", plugin.name)
+        self.plugins[plugin.name] = plugin
+        logger.info("已加载插件: %s (%s)，enabled=%s", plugin.name, type(plugin).__name__, self.is_enabled(plugin.name))
 
     def get(self, name: str) -> BasePlugin | None:
         """按名称获取插件实例。"""

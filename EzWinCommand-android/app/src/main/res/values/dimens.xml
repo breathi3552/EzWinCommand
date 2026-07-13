@@ -2,4 +2,16 @@
     <dimen name="control_screen_padding">16dp</dimen>
     <dimen name="main_screen_spacing">12dp</dimen>
     <dimen name="main_screen_section_spacing">20dp</dimen>
+    <dimen name="media_card_spacing">12dp</dimen>
+    <dimen name="media_card_horizontal_margin">16dp</dimen>
+    <dimen name="media_cover_size">112dp</dimen>
+    <dimen name="media_header_gap">16dp</dimen>
+    <dimen name="media_section_gap">16dp</dimen>
+    <dimen name="media_control_gap">16dp</dimen>
+    <dimen name="media_touch_target">48dp</dimen>
+    <dimen name="media_play_touch_target">56dp</dimen>
+    <dimen name="media_seek_height">32dp</dimen>
+    <dimen name="media_seek_thumb_size">12dp</dimen>
+    <dimen name="media_divider_height">1dp</dimen>
+    <dimen name="media_small_icon_size">20dp</dimen>
 </resources>

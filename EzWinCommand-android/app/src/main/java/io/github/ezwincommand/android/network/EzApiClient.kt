@@ -6,17 +6,49 @@ import io.github.ezwincommand.android.model.AuthorizeResult
 import io.github.ezwincommand.android.model.CommandResult
 import io.github.ezwincommand.android.model.CommandStatus
 import io.github.ezwincommand.android.model.DeviceInfo
+import io.github.ezwincommand.android.model.AudioEndpoint
+import io.github.ezwincommand.android.model.MediaPlayback
+import io.github.ezwincommand.android.model.MediaState
 import io.github.ezwincommand.android.model.PairingStatus
 import io.github.ezwincommand.android.model.PingResponse
 import io.github.ezwincommand.android.model.SubAction
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.Closeable
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+sealed interface MediaEventTermination {
+    data object Eof : MediaEventTermination
+    data class NetworkError(val message: String) : MediaEventTermination
+    data class HttpError(val status: Int, val message: String) : MediaEventTermination
+    data object ClosedByCaller : MediaEventTermination
+}
+
+private class MediaEventConnection(
+    private val callerClosed: AtomicBoolean,
+    private val connection: AtomicReference<HttpURLConnection?>,
+    private val job: AtomicReference<Job?>,
+    private val onCallerClosed: () -> Unit,
+) : Closeable {
+    override fun close() {
+        if (callerClosed.compareAndSet(false, true)) {
+            onCallerClosed()
+            connection.get()?.disconnect()
+            job.get()?.cancel()
+        }
+    }
+}
 
 open class EzApiClient(
     baseUrl: String,
@@ -28,6 +60,7 @@ open class EzApiClient(
         private val COMMAND_STATUSES = setOf("queued", "running", "succeeded", "failed")
     }
     internal val normalizedBaseUrl: String = normalizeBaseUrl(baseUrl)
+    private val mediaIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     open suspend fun ping(): ApiResult<PingResponse> = request(
         method = "GET",
@@ -129,6 +162,115 @@ open class EzApiClient(
         parser = { body -> body.optBoolean("success", false) },
     )
 
+    open suspend fun getMediaState(): ApiResult<MediaState> = request(
+        method = "GET",
+        path = "/api/media/state",
+        authenticated = true,
+        parser = ::parseMediaState,
+    )
+
+    open suspend fun getMediaCover(path: String): ApiResult<ByteArray> = withContext(Dispatchers.IO) {
+        val connection = try {
+            openConnection(path).apply {
+                requestMethod = "GET"
+                connectTimeout = timeoutMillis
+                readTimeout = timeoutMillis
+                setBearer()
+            }
+        } catch (t: Throwable) {
+            return@withContext ApiResult.NetworkError("无法建立封面请求", t)
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                val message = connection.errorStream?.readTextUtf8().orEmpty().ifBlank { "HTTP $status" }
+                ApiResult.HttpError(status, message)
+            } else {
+                ApiResult.Success(connection.inputStream.use { it.readBytes() })
+            }
+        } catch (t: Throwable) {
+            ApiResult.NetworkError("封面下载失败", t)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    open fun openMediaEvents(
+        since: Long,
+        onEvent: (MediaState) -> Unit,
+        onClosed: (MediaEventTermination) -> Unit,
+    ): Closeable {
+        require(since >= 0) { "since 不能为负数" }
+        val callerClosed = AtomicBoolean(false)
+        val terminated = AtomicBoolean(false)
+        val connectionRef = AtomicReference<HttpURLConnection?>()
+        val jobRef = AtomicReference<Job?>()
+        fun terminate(reason: MediaEventTermination) {
+            if (terminated.compareAndSet(false, true)) onClosed(reason)
+        }
+        val handle = MediaEventConnection(callerClosed, connectionRef, jobRef) { terminate(MediaEventTermination.ClosedByCaller) }
+        val job = mediaIoScope.launch {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = openConnection("/api/media/events?since=$since").apply {
+                    requestMethod = "GET"
+                    connectTimeout = timeoutMillis
+                    readTimeout = 0
+                    setRequestProperty("Accept", "text/event-stream")
+                    setBearer()
+                }
+                connectionRef.set(connection)
+                if (callerClosed.get()) return@launch
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    val raw = connection.errorStream?.readTextUtf8().orEmpty()
+                    val message = raw.toJsonObjectOrNull()?.optString("message")?.takeIf { it.isNotBlank() }
+                        ?: raw.ifBlank { "HTTP $status" }
+                    terminate(MediaEventTermination.HttpError(status, message))
+                    return@launch
+                }
+                connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    var event: String? = null
+                    var eventId: Long? = null
+                    val data = ArrayList<String>()
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) {
+                            if (event == "media" && data.isNotEmpty()) {
+                                val id = eventId?.takeIf { it >= 0 } ?: throw IllegalArgumentException("media 事件缺少或 id 非法")
+                                val state = parseMediaState(JSONObject(data.joinToString("\n")))
+                                require(id == state.revision) { "media 事件 id 与 revision 不一致" }
+                                onEvent(state)
+                            }
+                            event = null
+                            eventId = null
+                            data.clear()
+                        } else if (!line.startsWith(":")) {
+                            val separator = line.indexOf(':')
+                            val field = if (separator < 0) line else line.substring(0, separator)
+                            val value = if (separator < 0) "" else line.substring(separator + 1).removePrefix(" ")
+                            when (field) {
+                                "id" -> eventId = value.toLongOrNull() ?: throw IllegalArgumentException("非法 SSE id")
+                                "event" -> event = value
+                                "data" -> data.add(value)
+                            }
+                        }
+                    }
+                }
+                terminate(MediaEventTermination.Eof)
+            } catch (t: Throwable) {
+                if (!callerClosed.get()) terminate(MediaEventTermination.NetworkError("媒体事件连接失败"))
+            } finally {
+                connectionRef.compareAndSet(connection, null)
+                connection?.disconnect()
+                if (callerClosed.get()) terminate(MediaEventTermination.ClosedByCaller)
+            }
+        }
+        jobRef.set(job)
+        if (callerClosed.get()) job.cancel()
+        return handle
+    }
+
     private suspend fun <T> request(
         method: String,
         path: String,
@@ -189,9 +331,15 @@ open class EzApiClient(
         }
     }
 
-    internal fun openConnection(path: String): HttpURLConnection {
+    internal open fun openConnection(path: String): HttpURLConnection {
         val url = URL(normalizedBaseUrl + ensureLeadingSlash(path))
         return url.openConnection() as HttpURLConnection
+    }
+
+    private fun HttpURLConnection.setBearer() {
+        deviceKeyProvider()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            setRequestProperty("Authorization", "Bearer $it")
+        }
     }
 
     private fun normalizeBaseUrl(value: String): String {
@@ -285,6 +433,52 @@ open class EzApiClient(
                 )
             }
         }
+    }
+
+    internal fun parseMediaState(body: JSONObject): MediaState {
+        fun required(name: String): Any = body.opt(name).takeUnless { it == null || it === JSONObject.NULL }
+            ?: throw IllegalArgumentException("缺少 $name")
+        val revisionValue = required("revision")
+        require(revisionValue is Number) { "revision 必须是整数" }
+        val revision = revisionValue.toLong()
+        require(revisionValue.toDouble() == revision.toDouble()) { "revision 必须是整数" }
+        val available = required("available") as? Boolean ?: throw IllegalArgumentException("available 必须是布尔值")
+        val volumeValue = required("volume")
+        require(volumeValue is Number) { "volume 必须是整数" }
+        val volume = volumeValue.toInt()
+        require(volumeValue.toDouble() == volume.toDouble() && volume in 0..100) { "volume 必须是 0..100 整数" }
+        fun nullableString(name: String): String? = when (val value = body.opt(name)) {
+            null, JSONObject.NULL -> null
+            is String -> value
+            else -> throw IllegalArgumentException("$name 必须是字符串或 null")
+        }
+        fun endpoints(name: String): List<AudioEndpoint> {
+            val array = required(name) as? JSONArray ?: throw IllegalArgumentException("$name 必须是数组")
+            return buildList {
+                for (index in 0 until array.length()) {
+                    val endpoint = array.optJSONObject(index) ?: throw IllegalArgumentException("$name 元素必须是对象")
+                    val id = endpoint.opt("id") as? String ?: throw IllegalArgumentException("endpoint 缺少 id")
+                    val endpointName = endpoint.opt("name") as? String ?: throw IllegalArgumentException("endpoint 缺少 name")
+                    require(id.isNotEmpty()) { "endpoint id 不能为空" }
+                    add(AudioEndpoint(id, endpointName))
+                }
+            }
+        }
+        val playback = required("playback") as? String ?: throw IllegalArgumentException("playback 必须是字符串")
+        return MediaState(
+            revision = revision,
+            available = available,
+            title = nullableString("title"),
+            artist = nullableString("artist"),
+            playback = MediaPlayback.fromWire(playback),
+            cover = nullableString("cover"),
+            volume = volume,
+            renderDevices = endpoints("render_devices"),
+            captureDevices = endpoints("capture_devices"),
+            selectedRenderId = nullableString("selected_render_id"),
+            selectedCaptureId = nullableString("selected_capture_id"),
+            error = nullableString("error"),
+        )
     }
 
     private fun JSONObject.optStringOrNull(name: String): String? = if (has(name) && !isNull(name)) optString(name) else null

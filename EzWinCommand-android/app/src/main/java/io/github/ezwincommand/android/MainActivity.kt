@@ -14,6 +14,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import io.github.ezwincommand.android.databinding.ActivityMainBinding
 import io.github.ezwincommand.android.network.EzApiClient
 import io.github.ezwincommand.android.state.ConnectionCheckResult
@@ -28,7 +30,14 @@ import io.github.ezwincommand.android.ui.control.AndroidUiEffect
 import io.github.ezwincommand.android.ui.control.AndroidUiState
 import io.github.ezwincommand.android.ui.control.ControlController
 import io.github.ezwincommand.android.ui.control.ControlScreen
+import io.github.ezwincommand.android.ui.control.MediaConnectionController
+import io.github.ezwincommand.android.ui.control.MediaVolumeActor
+import io.github.ezwincommand.android.ui.control.withDevicePending
+import io.github.ezwincommand.android.ui.control.mergeAuthoritativeMedia
+import io.github.ezwincommand.android.ui.control.ControlPageGate
+import io.github.ezwincommand.android.ui.control.mergeReadyWithMedia
 import io.github.ezwincommand.android.ui.control.ControlUiState
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.net.URI
 
@@ -44,9 +53,19 @@ class MainActivity : AppCompatActivity() {
     private var activeController: ControlController? = null
     private var activeBaseUrl: String? = null
     private var hideTopMessageRunnable: Runnable? = null
+    private var mediaConnection: MediaConnectionController? = null
+    private var mediaVolumeActor: MediaVolumeActor? = null
+    private var mediaLifecycleJob: Job? = null
+    private var activeLoadJob: Job? = null
+    private val controlPageGate = ControlPageGate()
+    private var activeReadyState: ControlUiState.Ready? = null
 
     override fun onStart() {
         super.onStart()
+        controlPageGate.onStarted { trackActivePending() }
+    }
+
+    private fun trackActivePending() {
         activeController?.trackAllPending(lifecycleScope) { result ->
             runOnUiThread { showTopMessage(if (result.success) result.message else errorMessage(result.message)) }
         }
@@ -54,6 +73,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         activeController?.cancelTracking()
+        controlPageGate.invalidate()
         super.onStop()
     }
 
@@ -195,6 +215,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMainScreen() {
+        closeMediaSession()
+        activeController = null
+        activeBaseUrl = null
+        activeReadyState = null
         binding.titleText.visibility = View.VISIBLE
         binding.connectionCard.visibility = View.VISIBLE
         binding.pairingCard.visibility = View.GONE
@@ -202,22 +226,106 @@ class MainActivity : AppCompatActivity() {
         binding.connectionStatusText.visibility = View.GONE
     }
 
+    private fun closeMediaSession() {
+        controlPageGate.invalidate()
+        activeLoadJob?.cancel()
+        activeLoadJob = null
+        mediaConnection?.close()
+        mediaConnection = null
+        mediaVolumeActor?.close()
+        mediaVolumeActor = null
+        mediaLifecycleJob?.cancel()
+        mediaLifecycleJob = null
+    }
+
     private fun openControl(baseUrl: String) {
+        closeMediaSession()
         binding.titleText.visibility = View.GONE
         val screen = ControlScreen(this)
         binding.connectionCard.visibility = View.GONE
         binding.pairingCard.visibility = View.GONE
         binding.controlContainer.removeAllViews()
         binding.controlContainer.addView(screen)
-        lifecycleScope.launch {
-            val controller = createController(baseUrl)
-            activeController = controller
-            activeBaseUrl = baseUrl
-            controller.trackAllPending(lifecycleScope) { result -> runOnUiThread { showTopMessage(if (result.success) result.message else errorMessage(result.message)) } }
-            val controlState = controller.load()
-            coordinator.updateControlState(baseUrl, controlState)
-            renderControl(screen, controller, baseUrl, controlState)
+        val controller = createController(baseUrl)
+        activeController = controller
+        activeBaseUrl = baseUrl
+        val pageTicket = controlPageGate.begin(controller, baseUrl)
+        activeLoadJob = lifecycleScope.launch {
+            var currentState = controller.load()
+            if (!controlPageGate.afterLoad(pageTicket, binding.controlContainer.indexOfChild(screen) >= 0) { trackActivePending() }) return@launch
+            coordinator.updateControlState(baseUrl, currentState)
+            fun redraw(updated: ControlUiState) {
+                currentState = updated
+                activeReadyState = updated as? ControlUiState.Ready
+                coordinator.updateControlState(baseUrl, updated)
+                renderControl(screen, controller, baseUrl, updated)
+            }
+            renderControl(screen, controller, baseUrl, currentState)
+            activeReadyState = currentState as? ControlUiState.Ready
+            val initialReady = currentState as? ControlUiState.Ready
+            if (initialReady != null) {
+                mediaLifecycleJob = lifecycleScope.launch {
+                    repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        var latestAuthoritative = initialReady.media
+                        lateinit var volumeActor: MediaVolumeActor
+                        volumeActor = MediaVolumeActor(
+                            scope = this,
+                            execute = { controller.sendMediaAction("set_volume", it) },
+                            onLocalValue = screen::updateLocalVolume,
+                            onConfirmed = { },
+                            onFailure = { confirmed, message ->
+                                screen.updateLocalVolume(confirmed)
+                                val ready = activeReadyState ?: currentState as? ControlUiState.Ready ?: return@MediaVolumeActor
+                                redraw(ready.copy(media = ready.media.copy(volume = confirmed, error = message)))
+                            },
+                            onIdle = {
+                                val ready = activeReadyState ?: currentState as? ControlUiState.Ready ?: return@MediaVolumeActor
+                                redraw(ready.copy(media = latestAuthoritative))
+                            },
+                        )
+                        mediaVolumeActor = volumeActor
+                        val connection = MediaConnectionController(
+                            apiClient = controller.apiClient,
+                            baseUrl = baseUrl,
+                            scope = this,
+                            onState = { media ->
+                                val ready = activeReadyState ?: currentState as? ControlUiState.Ready ?: return@MediaConnectionController
+                                latestAuthoritative = media
+                                volumeActor.updateConfirmed(media.volume)
+                                val busy = volumeActor.isBusy()
+                                val updated = mergeReadyWithMedia(ready, media, busy)
+                                activeReadyState = updated
+                                if (!busy) redraw(updated) else {
+                                    currentState = updated
+                                    coordinator.updateControlState(baseUrl, updated)
+                                    screen.updateMediaStateExcludingVolume(updated)
+                                }
+                            },
+                            onArtwork = { _, bytes ->
+                                val ready = activeReadyState ?: currentState as? ControlUiState.Ready ?: return@MediaConnectionController
+                                redraw(ready.copy(artwork = bytes))
+                            },
+                            onError = { message ->
+                                val ready = activeReadyState ?: currentState as? ControlUiState.Ready ?: return@MediaConnectionController
+                                redraw(ready.copy(media = ready.media.copy(error = message), mediaLoading = false))
+                            },
+                            onAuthInvalid = { lifecycleScope.launch { renderEffect(coordinator.onAuthInvalid()) } },
+                        )
+                        mediaConnection = connection
+                        connection.start(controller)
+                        try {
+                            kotlinx.coroutines.awaitCancellation()
+                        } finally {
+                            connection.close()
+                            volumeActor.close()
+                            if (mediaConnection === connection) mediaConnection = null
+                            if (mediaVolumeActor === volumeActor) mediaVolumeActor = null
+                        }
+                    }
+                }
+            }
         }
+        activeLoadJob?.invokeOnCompletion { if (activeLoadJob?.isCompleted == true) activeLoadJob = null }
     }
 
     private fun renderControl(
@@ -231,14 +339,43 @@ class MainActivity : AppCompatActivity() {
         lateinit var renameInvoker: (String, String) -> Unit
         actionInvoker = { command ->
             lifecycleScope.launch {
-                val result = controller.sendAction(command)
+                val subAction = command.params["sub_action"] as? String
+                if (command.action == "media" && subAction == "set_volume") {
+                    val value = command.params["volume"] as Int
+                    if (command.params["finish"] == true) mediaVolumeActor?.finishGesture(value) else mediaVolumeActor?.submitVolume(value)
+                    return@launch
+                }
+                val result = if (command.action == "media" && subAction != null) {
+                    val value = command.params["endpoint_id"]
+                    val isDeviceCommand = subAction == "set_output_device" || subAction == "set_input_device"
+                    val before = activeReadyState
+                    if (isDeviceCommand && before != null) {
+                        val pending = before.withDevicePending(subAction, true)
+                        activeReadyState = pending
+                        coordinator.updateControlState(baseUrl, pending)
+                        screen.updateMediaStateExcludingVolume(pending)
+                    }
+                    try {
+                        controller.sendMediaAction(subAction, value)
+                    } finally {
+                        if (isDeviceCommand) {
+                            val current = activeReadyState ?: before
+                            if (current != null && activeController === controller && activeBaseUrl == baseUrl) {
+                                val cleared = current.withDevicePending(subAction, false)
+                                activeReadyState = cleared
+                                coordinator.updateControlState(baseUrl, cleared)
+                                screen.updateMediaStateExcludingVolume(cleared)
+                            }
+                        }
+                    }
+                } else {
+                    controller.sendAction(command)
+                }
                 showTopMessage(screen.showResult(result))
                 if (result.commandId != null && result.status != "succeeded" && result.status != "failed") {
                     controller.trackPending(command, lifecycleScope) { tracked -> runOnUiThread { showTopMessage(if (tracked.success) tracked.message else errorMessage(tracked.message)) } }
                 }
-                if (!result.success) {
-                    screen.render(ControlUiState.Error(result.message, authInvalid = false), actionInvoker, revokeInvoker, renameInvoker) { returnToPairing(baseUrl) }
-                }
+                if (!result.success) showTopMessage(errorMessage(result.message))
             }
         }
         revokeInvoker = { value ->
@@ -263,6 +400,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun returnToPairing(baseUrl: String) {
+        closeMediaSession()
+        activeController = null
+        activeBaseUrl = null
         binding.titleText.visibility = View.VISIBLE
         binding.controlContainer.removeAllViews()
         binding.connectionCard.visibility = View.VISIBLE
@@ -348,6 +488,11 @@ class MainActivity : AppCompatActivity() {
         } else {
             getString(R.string.main_error_prefix) + message
         }
+    }
+
+    override fun onDestroy() {
+        closeMediaSession()
+        super.onDestroy()
     }
 
     private fun createController(baseUrl: String): ControlController {

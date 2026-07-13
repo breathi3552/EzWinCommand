@@ -12,7 +12,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ControlController(
-    private val apiClient: EzApiClient,
+    internal val apiClient: EzApiClient,
     private val currentDeviceKeyProvider: () -> String? = { null },
     private val onAuthInvalid: () -> Unit,
     private val pendingStore: PendingCommandStore? = null,
@@ -20,12 +20,44 @@ class ControlController(
     private val commandInFlight = AtomicBoolean(false)
     private val trackingJobs = mutableMapOf<String, Job>()
     suspend fun load(): ControlUiState {
-        val a = apiClient.listActions(); val d = apiClient.listDevices()
-        return when { a.isAuthInvalid() || d.isAuthInvalid() -> { onAuthInvalid(); ControlUiState.Error("授权已失效，请重新配对。", true) }
-            a is ApiResult.Success && d is ApiResult.Success -> ControlUiState.Ready(a.value,d.value,currentDeviceKeyProvider()?.trim()?.takeIf { it.isNotEmpty() })
-            a is ApiResult.HttpError -> ControlUiState.Error(a.message,false); d is ApiResult.HttpError -> ControlUiState.Error(d.message,false)
-            a is ApiResult.NetworkError -> ControlUiState.Error(a.message,false); d is ApiResult.NetworkError -> ControlUiState.Error(d.message,false)
-            else -> ControlUiState.Error("加载控制页失败。",false) }
+        val a = apiClient.listActions()
+        val d = apiClient.listDevices()
+        val media = apiClient.getMediaState()
+        return when {
+            a.isAuthInvalid() || d.isAuthInvalid() || media.isAuthInvalid() -> {
+                onAuthInvalid()
+                ControlUiState.Error("授权已失效，请重新配对。", true)
+            }
+            a is ApiResult.Success && d is ApiResult.Success -> ControlUiState.Ready(
+                actions = a.value,
+                devices = d.value,
+                currentDeviceKey = currentDeviceKeyProvider()?.trim()?.takeIf { it.isNotEmpty() },
+                media = (media as? ApiResult.Success)?.value ?: io.github.ezwincommand.android.model.MediaState.LOADING,
+                mediaLoading = media !is ApiResult.Success,
+            )
+            a is ApiResult.HttpError -> ControlUiState.Error(a.message, false)
+            d is ApiResult.HttpError -> ControlUiState.Error(d.message, false)
+            a is ApiResult.NetworkError -> ControlUiState.Error(a.message, false)
+            d is ApiResult.NetworkError -> ControlUiState.Error(d.message, false)
+            else -> ControlUiState.Error("加载控制页失败。", false)
+        }
+    }
+
+    suspend fun sendMediaAction(subAction: String, value: Any? = null): CommandResult {
+        val params = linkedMapOf<String, Any?>("sub_action" to subAction)
+        when (subAction) {
+            "set_volume" -> params["volume"] = value
+            "set_output_device", "set_input_device" -> params["endpoint_id"] = value
+        }
+        return when (val result = apiClient.executeCommand("media", params)) {
+            is ApiResult.Success -> result.value
+            is ApiResult.HttpError -> {
+                if (result.status == 401 || result.status == 403) onAuthInvalid()
+                CommandResult(false, result.message, emptyMap())
+            }
+            is ApiResult.NetworkError -> CommandResult(false, result.message, emptyMap())
+            is ApiResult.ParseError -> CommandResult(false, result.message, emptyMap())
+        }
     }
     suspend fun sendAction(command: ActionCommand): CommandResult {
         if (!commandInFlight.compareAndSet(false,true)) return CommandResult(false,"命令正在执行，请稍候。",emptyMap())

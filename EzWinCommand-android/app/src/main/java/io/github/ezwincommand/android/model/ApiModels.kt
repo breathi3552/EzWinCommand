@@ -1,5 +1,59 @@
 package io.github.ezwincommand.android.model
 
+data class AudioEndpoint(
+    val id: String,
+    val name: String,
+)
+
+enum class MediaPlayback(val wireValue: String) {
+    PLAYING("playing"),
+    PAUSED("paused"),
+    STOPPED("stopped"),
+    NONE("none");
+
+    companion object {
+        fun fromWire(value: String): MediaPlayback = entries.firstOrNull { it.wireValue == value }
+            ?: throw IllegalArgumentException("未知 playback: $value")
+    }
+}
+
+data class MediaState(
+    val revision: Long,
+    val available: Boolean,
+    val title: String?,
+    val artist: String?,
+    val playback: MediaPlayback,
+    val cover: String?,
+    val volume: Int,
+    val renderDevices: List<AudioEndpoint>,
+    val captureDevices: List<AudioEndpoint>,
+    val selectedRenderId: String?,
+    val selectedCaptureId: String?,
+    val error: String?,
+) {
+    init {
+        require(revision >= 0) { "revision 不能为负数" }
+        require(volume in 0..100) { "volume 必须在 0..100" }
+    }
+
+    companion object {
+        val LOADING = MediaState(
+            revision = 0,
+            available = false,
+            title = null,
+            artist = null,
+            playback = MediaPlayback.NONE,
+            cover = null,
+            volume = 0,
+            renderDevices = emptyList(),
+            captureDevices = emptyList(),
+            selectedRenderId = null,
+            selectedCaptureId = null,
+            error = null,
+        )
+    }
+}
+
 data class PingResponse(
     val status: String,
 )
