@@ -7,6 +7,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 import hashlib
 import logging
+import time
 import threading
 from typing import Callable, Literal, Protocol
 
@@ -17,7 +18,6 @@ MAX_ARTWORK_BYTES = 5 * 1024 * 1024
 STARTUP_DEADLINE = 2.0
 REPLAY_WINDOW = 64
 RUNTIME_FAILURE_THRESHOLD = 3
-MEDIA_PROPERTIES_DEADLINE = 0.3
 Playback = Literal["playing", "paused", "stopped", "none"]
 
 
@@ -99,8 +99,10 @@ class _WindowsPlatformAdapter:
     def __init__(self) -> None:
         self._manager = None
         self._session = None
+        self._session_key: str | None = None
         self._manager_tokens: list[tuple[str, object]] = []
-        self._session_tokens: list[tuple[str, object]] = []
+        self._candidate_sessions: dict[str, tuple[object, object, list[tuple[str, object]]]] = {}
+        self._event_sessions: dict[str, object] = {}
         self._notify: Callable[[], None] = lambda: None
         self._com_initialized = False
         self._policy_config: _PolicyConfig | None = None
@@ -118,82 +120,179 @@ class _WindowsPlatformAdapter:
                 ("current_session_changed", self._manager.add_current_session_changed(self._on_manager_changed)),
                 ("sessions_changed", self._manager.add_sessions_changed(self._on_manager_changed)),
             ]
-            self._bind_current_session()
+            self._sync_sessions(force_rebind=True)
             self._policy_config = _PolicyConfig()
         except BaseException:
             await self.close()
             raise
 
+    @staticmethod
+    def _session_key_for(session) -> str | None:
+        if session is None:
+            return None
+        source_id = str(session.source_app_user_model_id or "")
+        return source_id or None
+
     def _on_manager_changed(self, *_args) -> None:
+        try:
+            self._sync_sessions(force_rebind=True)
+        except Exception:
+            logger.exception("同步 GSMTC sessions 失败: operation=manager_event")
         self._notify()
 
-    def _on_session_changed(self, *_args) -> None:
+    def _on_session_changed(self, sender, *_args) -> None:
+        try:
+            session_key = self._session_key_for(sender)
+            if session_key is not None:
+                self._event_sessions[session_key] = sender
+            binding = self._candidate_sessions.get(session_key) if session_key is not None else None
+            if binding is not None:
+                _session, event_owner, tokens = binding
+                self._candidate_sessions[session_key] = (sender, event_owner, tokens)
+            current_key = self._session_key_for(self._manager.get_current_session()) if self._manager is not None else None
+            self._select_session(current_key)
+        except Exception:
+            logger.exception("同步 GSMTC session 失败: operation=session_event")
         self._notify()
 
-    def _unbind_session(self) -> None:
-        if self._session is not None:
-            for event, event_token in self._session_tokens:
+    def _unbind_candidate(self, session_key: str) -> None:
+        binding = self._candidate_sessions.pop(session_key, None)
+        if binding is not None:
+            _session, event_owner, tokens = binding
+            for event, event_token in tokens:
                 try:
-                    getattr(self._session, f"remove_{event}")(event_token)
+                    getattr(event_owner, f"remove_{event}")(event_token)
                 except Exception:
-                    logger.exception("注销 GSMTC session 事件失败: event=%s", event)
-        self._session_tokens.clear()
+                    logger.exception("注销 GSMTC session 事件失败: event=%s source_id=%s", event, session_key)
+        self._event_sessions.pop(session_key, None)
+        if self._session_key == session_key:
+            self._session_key = None
+            self._session = None
+
+    def _unbind_sessions(self) -> None:
+        for session_key in tuple(self._candidate_sessions):
+            self._unbind_candidate(session_key)
+        self._session_key = None
         self._session = None
 
-    def _bind_current_session(self) -> None:
-        current = self._manager.get_current_session() if self._manager is not None else None
-        if current is self._session:
+    def _bind_candidate(self, session_key: str, session) -> None:
+        tokens: list[tuple[str, object]] = []
+        try:
+            tokens.append(("media_properties_changed", session.add_media_properties_changed(self._on_session_changed)))
+            tokens.append(("playback_info_changed", session.add_playback_info_changed(self._on_session_changed)))
+        except Exception:
+            for event, event_token in tokens:
+                try:
+                    getattr(session, f"remove_{event}")(event_token)
+                except Exception:
+                    logger.exception("回滚 GSMTC session 事件失败: event=%s source_id=%s", event, session_key)
+            raise
+        self._candidate_sessions[session_key] = (session, session, tokens)
+
+    def _select_session(self, current_key: str | None) -> None:
+        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
+
+        by_status: dict[object, list[str]] = {Status.PLAYING: [], Status.PAUSED: []}
+        for session_key, (session, _event_owner, _tokens) in self._candidate_sessions.items():
+            try:
+                status = session.get_playback_info().playback_status
+            except Exception:
+                logger.exception("读取 GSMTC playback 状态失败: source_id=%s", session_key)
+                continue
+            if status in by_status:
+                by_status[status].append(session_key)
+
+        eligible = by_status[Status.PLAYING] or by_status[Status.PAUSED]
+        if self._session_key in eligible:
+            selected_key = self._session_key
+        elif current_key in eligible:
+            selected_key = current_key
+        else:
+            selected_key = min(eligible) if eligible else None
+        self._session_key = selected_key
+        self._session = self._candidate_sessions[selected_key][0] if selected_key is not None else None
+
+    def _sync_sessions(self, *, force_rebind: bool = False, snapshot_manager=None) -> None:
+        manager = snapshot_manager or self._manager
+        if manager is None:
             return
-        self._unbind_session()
-        self._session = current
-        if current is not None:
-            self._session_tokens = [
-                ("media_properties_changed", current.add_media_properties_changed(self._on_session_changed)),
-                ("playback_info_changed", current.add_playback_info_changed(self._on_session_changed)),
-            ]
+
+        sessions: dict[str, object] = {}
+        for session in manager.get_sessions():
+            session_key = self._session_key_for(session)
+            if session_key is not None:
+                sessions[session_key] = session
+        current_key = self._session_key_for(manager.get_current_session())
+
+        if force_rebind:
+            selected_key = self._session_key
+            self._unbind_sessions()
+            self._session_key = selected_key
+        else:
+            for session_key in tuple(self._candidate_sessions):
+                if session_key not in sessions:
+                    self._unbind_candidate(session_key)
+        for session_key in sorted(sessions):
+            if session_key not in self._candidate_sessions:
+                self._bind_candidate(session_key, sessions[session_key])
+            else:
+                _session, event_owner, tokens = self._candidate_sessions[session_key]
+                latest_session = self._event_sessions.pop(session_key, sessions[session_key])
+                self._candidate_sessions[session_key] = (latest_session, event_owner, tokens)
+        self._select_session(current_key)
+        if snapshot_manager is not None and self._manager is not None:
+            subscribed_keys = set(self._candidate_sessions)
+            for session in self._manager.get_sessions():
+                session_key = self._session_key_for(session)
+                if session_key is not None and session_key not in subscribed_keys:
+                    self._bind_candidate(session_key, session)
+
+
+    async def _request_session_manager(self):
+        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
+
+        return await GlobalSystemMediaTransportControlsSessionManager.request_async()
+
+    async def _refresh_session_snapshots(self) -> None:
+        snapshot_manager = await self._request_session_manager()
+        self._sync_sessions(snapshot_manager=snapshot_manager)
 
     async def read_media(self) -> _MediaReading:
         from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
-
-        self._bind_current_session()
+        await self._refresh_session_snapshots()
         session = self._session
+        session_key = self._session_key
         if session is None:
             return _MediaReading(False, None, None, "none")
         status = session.get_playback_info().playback_status
         if status not in {Status.PLAYING, Status.PAUSED}:
             return _MediaReading(False, None, None, "none")
-        properties_task = asyncio.ensure_future(session.try_get_media_properties_async())
-        done, _ = await asyncio.wait({properties_task}, timeout=MEDIA_PROPERTIES_DEADLINE)
-        if properties_task not in done:
-            # WinRT async operation 的取消可能同步等待底层确认并卡住媒体线程。
-            # 保留 pending future 直到其自行结束，只丢弃该旧 session 的结果。
-            properties_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
-            logger.warning("读取媒体属性超时，按无活动媒体处理: operation=read_media_properties")
-            self._unbind_session()
-            return _MediaReading(False, None, None, "none")
-        props = properties_task.result()
+        props = await session.try_get_media_properties_async()
         playback: Playback = "playing" if status == Status.PLAYING else "paused"
-        artwork = None
-        mime = None
-        if props is not None and props.thumbnail is not None:
-            thumbnail_task = asyncio.create_task(self._read_thumbnail(props.thumbnail))
-            done, _ = await asyncio.wait({thumbnail_task}, timeout=MEDIA_PROPERTIES_DEADLINE)
-            if thumbnail_task in done:
-                try:
-                    artwork, mime = thumbnail_task.result()
-                except Exception:
-                    logger.exception("读取媒体封面失败: operation=read_thumbnail")
-            else:
-                thumbnail_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
-                logger.warning("读取媒体封面超时: operation=read_thumbnail")
         return _MediaReading(
             True,
             (props.title or None) if props is not None else None,
             (props.artist or None) if props is not None else None,
             playback,
-            artwork,
-            mime,
         )
+
+    async def read_artwork(self) -> tuple[bytes | None, str | None]:
+        await self._refresh_session_snapshots()
+        session = self._session
+        session_key = self._session_key
+        if session is None:
+            return None, None
+        props = await session.try_get_media_properties_async()
+        if props is None or props.thumbnail is None:
+            return None, None
+        try:
+            return await self._read_thumbnail(props.thumbnail)
+        except Exception:
+            logger.exception(
+                "读取媒体封面失败: operation=read_thumbnail source_id=%s",
+                session_key,
+            )
+            return None, None
 
     @staticmethod
     async def _read_thumbnail(reference) -> tuple[bytes | None, str | None]:
@@ -202,17 +301,36 @@ class _WindowsPlatformAdapter:
         stream = None
         reader = None
         try:
+            started = time.monotonic()
+            logger.info("开始打开媒体封面流: operation=open_artwork_stream")
             stream = await reference.open_read_async()
+            logger.info(
+                "媒体封面流已打开: operation=open_artwork_stream elapsed_ms=%.1f",
+                (time.monotonic() - started) * 1000,
+            )
             size = int(stream.size)
             if size > MAX_ARTWORK_BYTES:
                 raise ValueError(f"封面超过 {MAX_ARTWORK_BYTES} bytes 上限")
             reader = DataReader(stream.get_input_stream_at(0))
+            started = time.monotonic()
+            logger.info("开始加载媒体封面: operation=load_artwork size=%d", size)
             loaded = int(await reader.load_async(size))
+            logger.info(
+                "媒体封面已加载: operation=load_artwork elapsed_ms=%.1f loaded_bytes=%d",
+                (time.monotonic() - started) * 1000,
+                loaded,
+            )
             if loaded > MAX_ARTWORK_BYTES:
                 raise ValueError(f"封面超过 {MAX_ARTWORK_BYTES} bytes 上限")
             buffer = bytearray(loaded)
             reader.read_bytes(buffer)
-            return bytes(buffer), str(stream.content_type or "application/octet-stream")
+            mime = str(stream.content_type or "application/octet-stream")
+            logger.info(
+                "媒体封面字节读取完成: operation=read_artwork_bytes bytes=%d mime=%s",
+                len(buffer),
+                mime,
+            )
+            return bytes(buffer), mime
         finally:
             if reader is not None:
                 reader.close()
@@ -248,13 +366,14 @@ class _WindowsPlatformAdapter:
 
     async def execute(self, sub_action: str, volume: int | None, endpoint_id: str | None) -> CommandResult:
         if sub_action in {"play_pause", "prev", "next"}:
-            self._bind_current_session()
-            if self._session is None:
+            await self._refresh_session_snapshots()
+            session = self._session
+            if session is None:
                 return CommandResult(False, "当前没有可控制的媒体")
             method = {
-                "play_pause": self._session.try_toggle_play_pause_async,
-                "prev": self._session.try_skip_previous_async,
-                "next": self._session.try_skip_next_async,
+                "play_pause": session.try_toggle_play_pause_async,
+                "prev": session.try_skip_previous_async,
+                "next": session.try_skip_next_async,
             }[sub_action]
             accepted = bool(await method())
             return CommandResult(accepted, "媒体操作已执行" if accepted else "播放器拒绝了媒体操作")
@@ -284,7 +403,7 @@ class _WindowsPlatformAdapter:
         return CommandResult(False, "未知媒体操作")
 
     async def close(self) -> None:
-        self._unbind_session()
+        self._unbind_sessions()
         if self._manager is not None:
             for event, event_token in self._manager_tokens:
                 try:
@@ -318,6 +437,7 @@ class MediaService:
         self._covers: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
         self._cover_lock = threading.Lock()
         self._refresh_lock = asyncio.Lock()
+        self._artwork_diagnostic_task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._readiness_decision = threading.Event()
         self._media_ready = threading.Event()
@@ -417,7 +537,6 @@ class MediaService:
     async def _bootstrap(self) -> None:
         adapter = self._adapter_factory()
         installed = False
-        healthy = False
         try:
             logger.info("媒体服务阶段开始: operation=initialize")
             await adapter.initialize(self._schedule_refresh)
@@ -425,18 +544,13 @@ class MediaService:
                 return
             self._adapter = adapter
             installed = True
-            logger.info("媒体服务阶段开始: operation=read_media")
-            await self._refresh()
-            healthy = True
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("媒体服务初始化失败: operation=initialize/read_media/read_audio")
+            logger.exception("媒体服务初始化失败: operation=initialize")
             raise
         finally:
-            if installed and not healthy and self._adapter is adapter:
-                self._adapter = None
-            if not installed or not healthy:
+            if not installed:
                 try:
                     await adapter.close()
                 except Exception:
@@ -444,18 +558,18 @@ class MediaService:
     async def _poll(self) -> None:
         consecutive_failures = 0
         while True:
-            await asyncio.sleep(0.5)
             media_ok, audio_ok = await self._refresh()
             if media_ok or audio_ok:
                 consecutive_failures = 0
-                continue
-            consecutive_failures += 1
-            if consecutive_failures >= RUNTIME_FAILURE_THRESHOLD:
-                logger.error(
-                    "媒体 adapter 连续读取失败，准备重建: operation=runtime_health failures=%d",
-                    consecutive_failures,
-                )
-                return
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= RUNTIME_FAILURE_THRESHOLD:
+                    logger.error(
+                        "媒体 adapter 连续读取失败，准备重建: operation=runtime_health failures=%d",
+                        consecutive_failures,
+                    )
+                    return
+            await asyncio.sleep(0.5)
 
     def _schedule_refresh(self) -> None:
         loop = self._loop
@@ -467,16 +581,8 @@ class MediaService:
             adapter = self._adapter
             if adapter is None:
                 return False, False
-            media = None
             audio = None
-            media_error = None
             audio_error = None
-            try:
-                logger.info("媒体服务阶段开始: operation=read_media")
-                media = await adapter.read_media()
-            except Exception:
-                logger.exception("读取媒体状态失败: operation=read_media")
-                media_error = "读取状态失败"
             try:
                 logger.info("媒体服务阶段开始: operation=read_audio")
                 audio = adapter.read_audio()
@@ -484,11 +590,76 @@ class MediaService:
                 logger.exception("读取音频状态失败: operation=read_audio")
                 audio_error = "读取状态失败"
             old = self.snapshot()
+            audio_candidate = replace(
+                old,
+                volume=audio.volume if audio is not None else old.volume,
+                render_devices=audio.render_devices if audio is not None else old.render_devices,
+                capture_devices=audio.capture_devices if audio is not None else old.capture_devices,
+                selected_render_id=audio.selected_render_id if audio is not None else old.selected_render_id,
+                selected_capture_id=audio.selected_capture_id if audio is not None else old.selected_capture_id,
+                error=f"音频: {audio_error}" if audio_error else None,
+            )
+            self._publish(audio_candidate)
+            logger.info(
+                "音频状态读取完成: operation=read_audio volume=%d render_devices=%d capture_devices=%d",
+                audio.volume if audio is not None else -1,
+                len(audio.render_devices) if audio is not None else 0,
+                len(audio.capture_devices) if audio is not None else 0,
+            )
+
+            media = None
+            media_error = None
+            try:
+                logger.info("媒体服务阶段开始: operation=read_media")
+                media = await adapter.read_media()
+            except Exception:
+                logger.exception("读取媒体状态失败: operation=read_media")
+                media_error = "读取状态失败"
+            old = self.snapshot()
             cover = self._cache_artwork(media.artwork, media.artwork_mime) if media is not None else old.cover
-            errors = ([f"媒体: {media_error}"] if media_error else []) + ([f"音频: {audio_error}"] if audio_error else [])
-            candidate = MediaState(revision=old.revision, available=media.available if media is not None else old.available, title=media.title if media is not None else old.title, artist=media.artist if media is not None else old.artist, playback=media.playback if media is not None else old.playback, cover=cover, volume=audio.volume if audio is not None else old.volume, render_devices=audio.render_devices if audio is not None else old.render_devices, capture_devices=audio.capture_devices if audio is not None else old.capture_devices, selected_render_id=audio.selected_render_id if audio is not None else old.selected_render_id, selected_capture_id=audio.selected_capture_id if audio is not None else old.selected_capture_id, error="；".join(errors) or None)
+            candidate = replace(
+                old,
+                available=media.available if media is not None else old.available,
+                title=media.title if media is not None else old.title,
+                artist=media.artist if media is not None else old.artist,
+                playback=media.playback if media is not None else old.playback,
+                cover=cover,
+                error=f"媒体: {media_error}" if media_error else old.error,
+            )
             self._publish(candidate)
-            return media is not None, audio is not None
+            logger.info(
+                "媒体状态读取完成: operation=read_media available=%s title=%r playback=%s",
+                media.available if media is not None else False,
+                media.title if media is not None else None,
+                media.playback if media is not None else "none",
+            )
+            refresh_result = media is not None, audio is not None
+
+        self._start_artwork_diagnostic()
+        return refresh_result
+
+    def _start_artwork_diagnostic(self) -> None:
+        if self._artwork_diagnostic_task is not None:
+            return
+        adapter = self._adapter
+        read_artwork = getattr(adapter, "read_artwork", None)
+        if read_artwork is None:
+            return
+        self._artwork_diagnostic_task = asyncio.create_task(self._diagnose_artwork(read_artwork))
+
+    async def _diagnose_artwork(self, read_artwork) -> None:
+        logger.info("媒体服务阶段开始: operation=diagnose_artwork")
+        try:
+            artwork, artwork_mime = await read_artwork()
+            artwork_cover = self._cache_artwork(artwork, artwork_mime)
+            if artwork_cover is not None:
+                self._publish(replace(self.snapshot(), cover=artwork_cover))
+        except Exception:
+            logger.exception("媒体封面诊断失败: operation=diagnose_artwork")
+        finally:
+            current = asyncio.current_task()
+            if self._artwork_diagnostic_task is current:
+                self._artwork_diagnostic_task = None
 
     def _cache_artwork(self, data: bytes | None, mime: str | None) -> str | None:
         if data is None:
@@ -542,7 +713,6 @@ class MediaService:
         except Exception:
             logger.exception("媒体命令执行失败: operation=%s", sub_action)
             result = CommandResult(False, "媒体操作失败")
-        await self._refresh()
         return result
 
     def submit(self, sub_action: str, *, volume: int | None = None, endpoint_id: str | None = None) -> Future[CommandResult]:
