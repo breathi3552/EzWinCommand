@@ -9,6 +9,7 @@ import hashlib
 import logging
 import time
 import threading
+import comtypes
 from typing import Callable, Literal, Protocol
 
 from plugins.base import CommandResult
@@ -108,18 +109,17 @@ class _WindowsPlatformAdapter:
         self._policy_config: _PolicyConfig | None = None
 
     async def initialize(self, notify: Callable[[], None]) -> None:
-        import comtypes
-        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-
-        comtypes.CoInitialize()
+        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
         self._com_initialized = True
         self._notify = notify
         try:
+            from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
+
             self._manager = await GlobalSystemMediaTransportControlsSessionManager.request_async()
-            self._manager_tokens = [
-                ("current_session_changed", self._manager.add_current_session_changed(self._on_manager_changed)),
-                ("sessions_changed", self._manager.add_sessions_changed(self._on_manager_changed)),
-            ]
+            current_token = self._manager.add_current_session_changed(self._on_manager_changed)
+            self._manager_tokens.append(("current_session_changed", current_token))
+            sessions_token = self._manager.add_sessions_changed(self._on_manager_changed)
+            self._manager_tokens.append(("sessions_changed", sessions_token))
             self._sync_sessions(force_rebind=True)
             self._policy_config = _PolicyConfig()
         except BaseException:
@@ -419,7 +419,6 @@ class _WindowsPlatformAdapter:
                 logger.exception("释放 PolicyConfig COM 接口失败: operation=close_policy_config")
             self._policy_config = None
         if self._com_initialized:
-            import comtypes
             comtypes.CoUninitialize()
             self._com_initialized = False
 

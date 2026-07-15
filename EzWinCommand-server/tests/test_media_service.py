@@ -309,22 +309,25 @@ def test_no_media_is_normal_and_does_not_drop_audio() -> None:
         service.stop()
 
 
-def _install_fake_windows_modules(monkeypatch, request_async):
-    calls: list[tuple[str, str, int]] = []
+def _install_fake_windows_modules(monkeypatch, request_async, *, init_error: Exception | None = None):
+    calls: list[tuple] = []
     comtypes = ModuleType("comtypes")
+    comtypes.COINIT_MULTITHREADED = 0
 
-    def co_initialize():
-        calls.append(("init", threading.current_thread().name, threading.get_ident()))
+    def co_initialize_ex(flags):
+        calls.append(("init", threading.current_thread().name, threading.get_ident(), flags))
+        if init_error is not None:
+            raise init_error
 
     def co_uninitialize():
         calls.append(("uninit", threading.current_thread().name, threading.get_ident()))
 
-    comtypes.CoInitialize = co_initialize
+    comtypes.CoInitializeEx = co_initialize_ex
     comtypes.CoUninitialize = co_uninitialize
     control = ModuleType("winrt.windows.media.control")
     control.GlobalSystemMediaTransportControlsSessionManager = SimpleNamespace(request_async=request_async)
     control.GlobalSystemMediaTransportControlsSessionPlaybackStatus = SimpleNamespace(PLAYING=1, PAUSED=2)
-    monkeypatch.setitem(sys.modules, "comtypes", comtypes)
+    monkeypatch.setattr(media_service_module, "comtypes", comtypes)
     monkeypatch.setitem(sys.modules, "winrt.windows.media.control", control)
     return calls
 
@@ -366,8 +369,11 @@ def test_windows_adapter_balances_com_on_media_thread(monkeypatch) -> None:
         ("policy_close", "EzMediaLoop"),
         ("uninit", "EzMediaLoop"),
     ]
+    assert calls[0][3] == 0
     assert len({item[2] for item in calls}) == 1
     assert adapter._com_initialized is False
+
+
 
 
 class _FakeGsmSession:
@@ -619,6 +625,25 @@ def test_artwork_diagnostic_gets_properties_and_thumbnail_in_same_task(monkeypat
     assert task_ids[0] is task_ids[1]
 
 
+def test_windows_adapter_does_not_uninitialize_when_mta_init_fails(monkeypatch) -> None:
+    async def request_async():
+        raise AssertionError("COM 失败后不得访问 WinRT")
+
+    calls = _install_fake_windows_modules(monkeypatch, request_async, init_error=RuntimeError("mta failed"))
+    adapter = _WindowsPlatformAdapter()
+
+    try:
+        asyncio.run(adapter.initialize(lambda: None))
+    except RuntimeError as exc:
+        assert str(exc) == "mta failed"
+    else:
+        raise AssertionError("MTA 初始化失败必须向上传播")
+
+    assert [item[0] for item in calls] == ["init"]
+    assert calls[0][3] == 0
+    assert adapter._com_initialized is False
+
+
 def test_windows_adapter_balances_com_when_manager_init_fails(monkeypatch) -> None:
     async def request_async():
         raise RuntimeError("manager failed")
@@ -638,6 +663,38 @@ def test_windows_adapter_balances_com_when_manager_init_fails(monkeypatch) -> No
     asyncio.run(initialize())
     assert [item[0] for item in calls] == ["init", "uninit"]
     assert calls[0][2] == calls[1][2]
+    assert adapter._com_initialized is False
+
+
+def test_windows_adapter_rolls_back_first_manager_token_when_second_add_fails(monkeypatch) -> None:
+    removed: list[tuple[str, str]] = []
+
+    class Manager:
+        def add_current_session_changed(self, _handler):
+            return "current"
+
+        def add_sessions_changed(self, _handler):
+            raise RuntimeError("sessions add failed")
+
+        def remove_current_session_changed(self, token):
+            removed.append(("current_session_changed", token))
+
+    async def request_async():
+        return Manager()
+
+    calls = _install_fake_windows_modules(monkeypatch, request_async)
+    adapter = _WindowsPlatformAdapter()
+
+    try:
+        asyncio.run(adapter.initialize(lambda: None))
+    except RuntimeError as exc:
+        assert str(exc) == "sessions add failed"
+    else:
+        raise AssertionError("第二个事件注册失败必须向上传播")
+
+    assert removed == [("current_session_changed", "current")]
+    assert [item[0] for item in calls] == ["init", "uninit"]
+    assert adapter._manager_tokens == []
     assert adapter._com_initialized is False
 
 
