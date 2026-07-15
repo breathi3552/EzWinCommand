@@ -54,13 +54,16 @@ open class EzApiClient(
     baseUrl: String,
     private val deviceKeyProvider: () -> String?,
     private val timeoutMillis: Int = 5_000,
-) {
+) : Closeable {
     companion object {
         const val COMMAND_READ_TIMEOUT_MILLIS: Int = 5_000
         private val COMMAND_STATUSES = setOf("queued", "running", "succeeded", "failed")
     }
     internal val normalizedBaseUrl: String = normalizeBaseUrl(baseUrl)
-    private val mediaIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val mediaIoJob = SupervisorJob()
+    private val mediaIoScope = CoroutineScope(mediaIoJob + Dispatchers.IO)
+    private val mediaConnections = mutableSetOf<Closeable>()
+    private val closed = AtomicBoolean(false)
 
     open suspend fun ping(): ApiResult<PingResponse> = request(
         method = "GET",
@@ -195,11 +198,21 @@ open class EzApiClient(
         }
     }
 
+    open override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        val connections = synchronized(mediaConnections) {
+            mediaConnections.toList().also { mediaConnections.clear() }
+        }
+        connections.forEach { it.close() }
+        mediaIoJob.cancel()
+    }
+
     open fun openMediaEvents(
         since: Long,
         onEvent: (MediaState) -> Unit,
         onClosed: (MediaEventTermination) -> Unit,
     ): Closeable {
+        require(!closed.get()) { "EzApiClient 已关闭" }
         require(since >= 0) { "since 不能为负数" }
         val callerClosed = AtomicBoolean(false)
         val terminated = AtomicBoolean(false)
@@ -209,6 +222,8 @@ open class EzApiClient(
             if (terminated.compareAndSet(false, true)) onClosed(reason)
         }
         val handle = MediaEventConnection(callerClosed, connectionRef, jobRef) { terminate(MediaEventTermination.ClosedByCaller) }
+        synchronized(mediaConnections) { mediaConnections.add(handle) }
+        if (closed.get()) handle.close()
         val job = mediaIoScope.launch {
             var connection: HttpURLConnection? = null
             try {
@@ -267,6 +282,7 @@ open class EzApiClient(
             }
         }
         jobRef.set(job)
+        job.invokeOnCompletion { synchronized(mediaConnections) { mediaConnections.remove(handle) } }
         if (callerClosed.get()) job.cancel()
         return handle
     }

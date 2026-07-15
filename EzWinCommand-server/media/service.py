@@ -14,7 +14,10 @@ from plugins.base import CommandResult
 
 logger = logging.getLogger(__name__)
 MAX_ARTWORK_BYTES = 5 * 1024 * 1024
-STARTUP_DEADLINE = 0.5
+STARTUP_DEADLINE = 2.0
+REPLAY_WINDOW = 64
+RUNTIME_FAILURE_THRESHOLD = 3
+MEDIA_PROPERTIES_DEADLINE = 0.3
 Playback = Literal["playing", "paused", "stopped", "none"]
 
 
@@ -156,16 +159,33 @@ class _WindowsPlatformAdapter:
         session = self._session
         if session is None:
             return _MediaReading(False, None, None, "none")
-        props = await session.try_get_media_properties_async()
         status = session.get_playback_info().playback_status
-        playback: Playback = "playing" if status == Status.PLAYING else "paused" if status == Status.PAUSED else "stopped"
+        if status not in {Status.PLAYING, Status.PAUSED}:
+            return _MediaReading(False, None, None, "none")
+        properties_task = asyncio.ensure_future(session.try_get_media_properties_async())
+        done, _ = await asyncio.wait({properties_task}, timeout=MEDIA_PROPERTIES_DEADLINE)
+        if properties_task not in done:
+            # WinRT async operation 的取消可能同步等待底层确认并卡住媒体线程。
+            # 保留 pending future 直到其自行结束，只丢弃该旧 session 的结果。
+            properties_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+            logger.warning("读取媒体属性超时，按无活动媒体处理: operation=read_media_properties")
+            self._unbind_session()
+            return _MediaReading(False, None, None, "none")
+        props = properties_task.result()
+        playback: Playback = "playing" if status == Status.PLAYING else "paused"
         artwork = None
         mime = None
         if props is not None and props.thumbnail is not None:
-            try:
-                artwork, mime = await self._read_thumbnail(props.thumbnail)
-            except Exception:
-                logger.exception("读取媒体封面失败: operation=read_thumbnail")
+            thumbnail_task = asyncio.create_task(self._read_thumbnail(props.thumbnail))
+            done, _ = await asyncio.wait({thumbnail_task}, timeout=MEDIA_PROPERTIES_DEADLINE)
+            if thumbnail_task in done:
+                try:
+                    artwork, mime = thumbnail_task.result()
+                except Exception:
+                    logger.exception("读取媒体封面失败: operation=read_thumbnail")
+            else:
+                thumbnail_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+                logger.warning("读取媒体封面超时: operation=read_thumbnail")
         return _MediaReading(
             True,
             (props.title or None) if props is not None else None,
@@ -326,7 +346,6 @@ class MediaService:
         if self._stop_signal.is_set():
             self._stop_requested.set()
         stop_task = asyncio.create_task(self._stop_requested.wait())
-        poll: asyncio.Task[None] | None = None
         first_attempt = True
         try:
             while not stop_task.done():
@@ -341,8 +360,8 @@ class MediaService:
                     await asyncio.gather(attempt, return_exceptions=True)
                     break
                 if attempt not in done:
-                    # The first deadline is the only readiness decision.  The
-                    # cancelled WinRT await is required to be cancellation-safe.
+                    # 首次 deadline 只决定启动就绪状态；取消后的 adapter
+                    # 必须仍在媒体线程清理，再进入有界退避重试。
                     self._publish_error("媒体服务初始化超时")
                     self._readiness_decision.set()
                     first_attempt = False
@@ -360,19 +379,31 @@ class MediaService:
                 self._readiness_decision.set()
                 self._publish_error(None)
                 poll = asyncio.create_task(self._poll())
-                await stop_task
+                done, _ = await asyncio.wait({poll, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+                if stop_task in done:
+                    poll.cancel()
+                    await asyncio.gather(poll, return_exceptions=True)
+                    break
+                await poll
+                self._media_ready.clear()
+                await self._close_adapter()
+                if await self._retry_sleep(stop_task):
+                    break
         finally:
-            if poll is not None:
-                poll.cancel()
-                await asyncio.gather(poll, return_exceptions=True)
             stop_task.cancel()
             await asyncio.gather(stop_task, return_exceptions=True)
-            if self._adapter is not None:
-                try:
-                    await self._adapter.close()
-                except Exception:
-                    logger.exception("释放媒体平台对象失败: operation=close")
-                self._adapter = None
+            self._media_ready.clear()
+            await self._close_adapter()
+
+    async def _close_adapter(self) -> None:
+        adapter = self._adapter
+        self._adapter = None
+        if adapter is None:
+            return
+        try:
+            await adapter.close()
+        except Exception:
+            logger.exception("释放媒体平台对象失败: operation=close")
 
     async def _retry_sleep(self, stop_task: asyncio.Task[bool]) -> bool:
         delay = asyncio.create_task(asyncio.sleep(0.1))
@@ -411,20 +442,31 @@ class MediaService:
                 except Exception:
                     logger.exception("释放失败的媒体 adapter 失败")
     async def _poll(self) -> None:
+        consecutive_failures = 0
         while True:
             await asyncio.sleep(0.5)
-            await self._refresh()
+            media_ok, audio_ok = await self._refresh()
+            if media_ok or audio_ok:
+                consecutive_failures = 0
+                continue
+            consecutive_failures += 1
+            if consecutive_failures >= RUNTIME_FAILURE_THRESHOLD:
+                logger.error(
+                    "媒体 adapter 连续读取失败，准备重建: operation=runtime_health failures=%d",
+                    consecutive_failures,
+                )
+                return
 
     def _schedule_refresh(self) -> None:
         loop = self._loop
         if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(lambda: asyncio.create_task(self._refresh()))
 
-    async def _refresh(self) -> None:
+    async def _refresh(self) -> tuple[bool, bool]:
         async with self._refresh_lock:
             adapter = self._adapter
             if adapter is None:
-                return
+                return False, False
             media = None
             audio = None
             media_error = None
@@ -446,6 +488,7 @@ class MediaService:
             errors = ([f"媒体: {media_error}"] if media_error else []) + ([f"音频: {audio_error}"] if audio_error else [])
             candidate = MediaState(revision=old.revision, available=media.available if media is not None else old.available, title=media.title if media is not None else old.title, artist=media.artist if media is not None else old.artist, playback=media.playback if media is not None else old.playback, cover=cover, volume=audio.volume if audio is not None else old.volume, render_devices=audio.render_devices if audio is not None else old.render_devices, capture_devices=audio.capture_devices if audio is not None else old.capture_devices, selected_render_id=audio.selected_render_id if audio is not None else old.selected_render_id, selected_capture_id=audio.selected_capture_id if audio is not None else old.selected_capture_id, error="；".join(errors) or None)
             self._publish(candidate)
+            return media is not None, audio is not None
 
     def _cache_artwork(self, data: bytes | None, mime: str | None) -> str | None:
         if data is None:
@@ -458,7 +501,7 @@ class MediaService:
         with self._cover_lock:
             self._covers[artwork_id] = (data, content_type)
             self._covers.move_to_end(artwork_id)
-            while len(self._covers) > 2:
+            while len(self._covers) > REPLAY_WINDOW:
                 self._covers.popitem(last=False)
         return f"/api/media/cover/{artwork_id}"
 

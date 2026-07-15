@@ -133,6 +133,18 @@ class ControlControllerTest {
         assertEquals("running", result?.status)
     }
 
+    @Test
+    fun `close cancels tracking ownership and closes client once`() {
+        var closes = 0
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "k" }) {
+            override fun close() { closes++ }
+        }
+        val controller = ControlController(client, onAuthInvalid = {})
+        controller.close()
+        assertEquals(1, closes)
+    }
+
+
     private fun fakeClient(
         actions: List<ActionPlugin> = listOf(ActionPlugin("power", "电源", "desc", "1", listOf(SubAction("sleep", "睡眠")))),
         devices: List<DeviceInfo> = listOf(DeviceInfo("k", "手机", null, null)),

@@ -25,6 +25,7 @@ class MediaConnectionController(
     private val onError: (String) -> Unit,
     private val onAuthInvalid: () -> Unit,
     private val retryDelay: suspend (Long) -> Unit = { delay(it) },
+    private val artworkRetryDelay: suspend (Long) -> Unit = { delay(it) },
 ) : Closeable {
     private val generationCounter = AtomicLong(0)
     private var activeGeneration = 0L
@@ -141,11 +142,27 @@ class MediaConnectionController(
         }
         onArtwork(path, null)
         coverJob = scope.launch {
-            val result = apiClient.getMediaCover(path)
-            withContext(mainDispatcher) {
-                if (!isCurrent(generation, owner) || loadedCoverPath != path) return@withContext
-                onArtwork(path, (result as? ApiResult.Success)?.value)
-                if (result is ApiResult.HttpError && (result.status == 401 || result.status == 403)) onAuthInvalid()
+            repeat(ARTWORK_ATTEMPTS) { attempt ->
+                val result = apiClient.getMediaCover(path)
+                val applied = withContext(mainDispatcher) {
+                    if (!isCurrent(generation, owner) || loadedCoverPath != path) return@withContext true
+                    when (result) {
+                        is ApiResult.Success -> {
+                            onArtwork(path, result.value)
+                            true
+                        }
+                        is ApiResult.HttpError -> {
+                            if (result.status == 401 || result.status == 403) {
+                                onAuthInvalid()
+                                true
+                            } else result.status != 404
+                        }
+                        is ApiResult.NetworkError -> false
+                        is ApiResult.ParseError -> true
+                    }
+                }
+                if (applied || attempt == ARTWORK_ATTEMPTS - 1) return@launch
+                artworkRetryDelay(backoffMillis(attempt))
             }
         }
     }
@@ -156,5 +173,6 @@ class MediaConnectionController(
 
     companion object {
         internal fun backoffMillis(retry: Int): Long = (1_000L shl retry.coerceAtMost(3)).coerceAtMost(8_000L)
+        private const val ARTWORK_ATTEMPTS = 3
     }
 }

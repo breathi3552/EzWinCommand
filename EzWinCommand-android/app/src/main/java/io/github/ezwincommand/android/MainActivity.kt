@@ -216,6 +216,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMainScreen() {
         closeMediaSession()
+        activeController?.close()
         activeController = null
         activeBaseUrl = null
         activeReadyState = null
@@ -240,6 +241,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openControl(baseUrl: String) {
         closeMediaSession()
+        activeController?.close()
         binding.titleText.visibility = View.GONE
         val screen = ControlScreen(this)
         binding.connectionCard.visibility = View.GONE
@@ -401,6 +403,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun returnToPairing(baseUrl: String) {
         closeMediaSession()
+        activeController?.close()
         activeController = null
         activeBaseUrl = null
         binding.titleText.visibility = View.VISIBLE
@@ -492,6 +495,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         closeMediaSession()
+        activeController?.close()
+        activeController = null
         super.onDestroy()
     }
 

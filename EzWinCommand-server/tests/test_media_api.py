@@ -165,6 +165,48 @@ def test_state_cover_and_command_validation() -> None:
         assert client.post("/api/command", json={"action": "media", "params": {"sub_action": "play_pause", "extra": 1}}).status_code == 422
 
 
+def test_slow_media_command_does_not_block_event_loop_ping() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowMediaService(FakeMediaService):
+        def submit(self, sub_action, *, volume=None, endpoint_id=None):
+            from concurrent.futures import Future
+
+            self.calls.append((sub_action, volume, endpoint_id))
+            future = Future()
+            started.set()
+
+            def complete() -> None:
+                release.wait()
+                future.set_result(CommandResult(True, "ok"))
+
+            threading.Thread(target=complete, daemon=True).start()
+            return future
+
+    service = SlowMediaService()
+    with TestClient(create_app(service)) as client:
+        response = {}
+
+        def send_command() -> None:
+            response["value"] = client.post(
+                "/api/command",
+                json={"action": "media", "params": {"sub_action": "play_pause"}},
+            )
+
+        command_thread = threading.Thread(target=send_command)
+        command_thread.start()
+        try:
+            assert started.wait(1)
+            assert client.get("/ping").status_code == 200
+            assert client.get("/api/media/state").status_code == 200
+        finally:
+            release.set()
+            command_thread.join(2)
+        assert not command_thread.is_alive()
+        assert response["value"].status_code == 200
+
+
 def test_actions_clean_cutover_and_sse_replay_framing() -> None:
     service = FakeMediaService()
     with TestClient(create_app(service)) as client:

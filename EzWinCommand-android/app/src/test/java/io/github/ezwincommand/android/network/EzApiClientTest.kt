@@ -3,6 +3,8 @@ package io.github.ezwincommand.android.network
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.Job
+import org.junit.Assert.assertFalse
 
 class EzApiClientTest {
     @Test
@@ -51,4 +53,21 @@ class EzApiClientTest {
         assertEquals(403, result.status)
         assertEquals("配对码无效或已锁定", result.message)
     }
+    @Test
+    fun `close cancels media scope and is idempotent`() {
+        val client = EzApiClient("http://127.0.0.1:8080", deviceKeyProvider = { null })
+        val field = EzApiClient::class.java.getDeclaredField("mediaIoJob").apply { isAccessible = true }
+        val job = field.get(client) as Job
+        assertTrue(job.isActive)
+        client.close()
+        client.close()
+        assertFalse(job.isActive)
+        try {
+            client.openMediaEvents(0, {}, {})
+            throw AssertionError("expected closed client failure")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("关闭"))
+        }
+    }
+
 }

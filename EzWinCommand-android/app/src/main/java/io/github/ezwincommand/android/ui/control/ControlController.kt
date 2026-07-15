@@ -4,6 +4,7 @@ import io.github.ezwincommand.android.model.CommandResult
 import io.github.ezwincommand.android.network.ApiResult
 import io.github.ezwincommand.android.network.EzApiClient
 import io.github.ezwincommand.android.storage.PendingCommandStore
+import java.io.Closeable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,7 +17,7 @@ class ControlController(
     private val currentDeviceKeyProvider: () -> String? = { null },
     private val onAuthInvalid: () -> Unit,
     private val pendingStore: PendingCommandStore? = null,
-) {
+) : Closeable {
     private val commandInFlight = AtomicBoolean(false)
     private val trackingJobs = mutableMapOf<String, Job>()
     suspend fun load(): ControlUiState {
@@ -117,6 +118,10 @@ class ControlController(
         pendingStore?.allPending()?.forEach { trackPending(ActionCommand(it.action, it.params), scope, onResult) }
     }
     fun cancelTracking() { synchronized(trackingJobs) { trackingJobs.values.forEach { it.cancel() }; trackingJobs.clear() } }
+    override fun close() {
+        cancelTracking()
+        apiClient.close()
+    }
     suspend fun revokeDevice(deviceKey:String): Boolean = when(val r=apiClient.revokeDevice(deviceKey)) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
     suspend fun renameDevice(deviceKey:String,name:String): Boolean = if(name.trim().isEmpty()) false else when(val r=apiClient.renameDevice(deviceKey,name.trim())) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
 }

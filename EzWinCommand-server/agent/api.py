@@ -203,7 +203,10 @@ async def execute_command(body: CommandRequest, request: Request):
         if validation_error is not None:
             return validation_error
     dispatcher = _get_dispatcher(request)
-    result = dispatcher.execute(body.action, body.params)
+    if body.action == "media":
+        result = await asyncio.to_thread(dispatcher.execute, body.action, body.params)
+    else:
+        result = dispatcher.execute(body.action, body.params)
     return {"success": result.success, "message": result.message, "data": result.data}
 
 @router.get("/api/commands/{command_id}")

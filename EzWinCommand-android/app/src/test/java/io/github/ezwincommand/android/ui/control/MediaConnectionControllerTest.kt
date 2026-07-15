@@ -5,6 +5,7 @@ import io.github.ezwincommand.android.network.ApiResult
 import io.github.ezwincommand.android.network.EzApiClient
 import io.github.ezwincommand.android.network.MediaEventTermination
 import java.io.Closeable
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -122,6 +123,73 @@ class MediaConnectionControllerTest {
         assertEquals(1, covers)
         controller.close()
     }
+
+    @Test
+    fun `cover retries same path after transient failures`() = runTest {
+        var attempts = 0
+        val artwork = mutableListOf<ByteArray?>()
+        val delays = mutableListOf<Long>()
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
+            override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 1, cover = "/cover/a"))
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit) = Closeable { }
+            override suspend fun getMediaCover(path: String): ApiResult<ByteArray> {
+                attempts++
+                return if (attempts < 3) ApiResult.HttpError(404, "missing") else ApiResult.Success(byteArrayOf(7))
+            }
+        }
+        val controller = MediaConnectionController(
+            client, "http://127.0.0.1:8080", this, StandardTestDispatcher(testScheduler),
+            onState = {}, onArtwork = { _, bytes -> artwork += bytes }, onError = {}, onAuthInvalid = {},
+            artworkRetryDelay = { delays += it },
+        )
+        controller.start("owner")
+        advanceUntilIdle()
+        assertEquals(3, attempts)
+        assertEquals(listOf(1_000L, 2_000L), delays)
+        assertTrue(artwork.last()!!.contentEquals(byteArrayOf(7)))
+        controller.close()
+    }
+
+    @Test
+    fun `new cover path cancels old retry and stale result cannot overwrite`() = runTest {
+        val events = mutableListOf<(MediaState) -> Unit>()
+        val requested = mutableListOf<String>()
+        val artworkPaths = mutableListOf<String>()
+        val oldStarted = CompletableDeferred<Unit>()
+        val releaseOld = CompletableDeferred<Unit>()
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
+            override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 1, cover = "/cover/old"))
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+                events += onEvent
+                return Closeable { }
+            }
+            override suspend fun getMediaCover(path: String): ApiResult<ByteArray> {
+                requested += path
+                if (path.endsWith("old")) {
+                    oldStarted.complete(Unit)
+                    releaseOld.await()
+                    return ApiResult.Success(byteArrayOf(1))
+                }
+                return ApiResult.Success(byteArrayOf(9))
+            }
+        }
+        val controller = MediaConnectionController(
+            client, "http://127.0.0.1:8080", this, dispatcher,
+            onState = {}, onArtwork = { path, bytes -> if (bytes != null) artworkPaths += path }, onError = {}, onAuthInvalid = {},
+        )
+        controller.start("owner")
+        runCurrent()
+        assertTrue(oldStarted.isCompleted)
+        events.single()(MediaState.LOADING.copy(revision = 2, cover = "/cover/new"))
+        runCurrent()
+        releaseOld.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(listOf("/cover/old", "/cover/new"), requested)
+        assertEquals(listOf("/cover/new"), artworkPaths)
+        controller.close()
+    }
+
 
     @Test
     fun `older SSE revision cannot restore stale timeout after recovery`() = runTest {

@@ -177,15 +177,87 @@ def test_service_single_thread_revision_and_artwork_are_independent() -> None:
     assert adapter.closed is True
 
 
-def test_cover_cache_keeps_current_and_previous_and_uses_mime_in_hash() -> None:
+def test_cover_cache_keeps_replay_window_and_uses_mime_in_hash() -> None:
     service = MediaService()
     first = service._cache_artwork(b"same", "image/png")
     second = service._cache_artwork(b"same", "image/jpeg")
-    third = service._cache_artwork(b"other", "image/png")
-    assert first != second != third
+    assert first != second
+    generated = [service._cache_artwork(f"cover-{index}".encode(), "image/png") for index in range(63)]
     assert service.get_cover(first.rsplit("/", 1)[1]) is None
     assert service.get_cover(second.rsplit("/", 1)[1]) == (b"same", "image/jpeg")
+    assert all(service.get_cover(path.rsplit("/", 1)[1]) is not None for path in generated)
     assert service.get_cover("not-a-token") is None
+
+
+def test_runtime_full_domain_failures_close_and_rebootstrap() -> None:
+    class FailingAfterBootstrap(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.media_reads = 0
+
+        async def read_media(self):
+            self.media_reads += 1
+            if self.media_reads > 1:
+                raise RuntimeError("stale media adapter")
+            return await super().read_media()
+
+        def read_audio(self):
+            if self.media_reads > 1:
+                raise RuntimeError("stale audio adapter")
+            return super().read_audio()
+
+    first = FailingAfterBootstrap()
+    recovered = FakeAdapter()
+    adapters = iter((first, recovered))
+    service = MediaService(lambda: next(adapters))
+    service.start()
+    try:
+        for _ in range(40):
+            if first.closed and service.snapshot().error is None and service.snapshot().available:
+                break
+            threading.Event().wait(0.1)
+        assert first.closed is True
+        assert first.close_count == 1
+        assert first.close_threads == ["EzMediaLoop"]
+        assert service.snapshot().error is None
+        assert service.submit("play_pause").result(timeout=1).success is True
+    finally:
+        service.stop()
+    assert recovered.close_count == 1
+
+
+def test_single_domain_failures_preserve_other_state_without_restart() -> None:
+    class MediaOnlyFailure(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.media_reads = 0
+
+        async def read_media(self):
+            self.media_reads += 1
+            if self.media_reads > 1:
+                raise RuntimeError("transient media failure")
+            return await super().read_media()
+
+    adapter = MediaOnlyFailure()
+    factory_calls = 0
+
+    def factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return adapter
+
+    service = MediaService(factory)
+    service.start()
+    try:
+        threading.Event().wait(2.0)
+        state = service.snapshot()
+        assert factory_calls == 1
+        assert adapter.closed is False
+        assert state.volume == 37
+        assert state.title == "Song"
+        assert state.error == "媒体: 读取状态失败"
+    finally:
+        service.stop()
 
 
 def test_no_media_is_normal_and_does_not_drop_audio() -> None:
@@ -261,6 +333,29 @@ def test_windows_adapter_balances_com_on_media_thread(monkeypatch) -> None:
     ]
     assert len({item[2] for item in calls}) == 1
     assert adapter._com_initialized is False
+
+
+def test_windows_adapter_stale_session_properties_timeout_is_no_media(monkeypatch) -> None:
+    class Session:
+        def add_media_properties_changed(self, _handler): return "media"
+        def add_playback_info_changed(self, _handler): return "playback"
+        def remove_media_properties_changed(self, token): assert token == "media"
+        def remove_playback_info_changed(self, token): assert token == "playback"
+        def get_playback_info(self): return SimpleNamespace(playback_status=1)
+        async def try_get_media_properties_async(self):
+            await asyncio.Event().wait()
+
+    adapter = _WindowsPlatformAdapter()
+    adapter._manager = SimpleNamespace(get_current_session=lambda: Session())
+    control = ModuleType("winrt.windows.media.control")
+    control.GlobalSystemMediaTransportControlsSessionPlaybackStatus = SimpleNamespace(
+        PLAYING=1, PAUSED=2,
+    )
+    monkeypatch.setitem(sys.modules, "winrt.windows.media.control", control)
+    monkeypatch.setattr(media_service_module, "MEDIA_PROPERTIES_DEADLINE", 0.01)
+    reading = asyncio.run(adapter.read_media())
+    assert reading == _MediaReading(False, None, None, "none")
+    assert adapter._session is None
 
 
 def test_windows_adapter_balances_com_when_manager_init_fails(monkeypatch) -> None:
