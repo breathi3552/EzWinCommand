@@ -113,6 +113,31 @@ class ConnectionRepositoryCancellationTest {
     }
 
     @Test
+    fun `failed complete keeps pending for a later successful retry`() = runTest {
+        val store = store("failed-complete-retry")
+        var completeCalls = 0
+        val api = object : EzApiClient(BASE_URL_A, { null }) {
+            override suspend fun identity() = ApiResult.Success(ServerIdentity(1, SERVER_A, "PC A"))
+            override suspend fun createPairing(serverId: String, deviceName: String) = ApiResult.Success(PairingCreated("pair", 300))
+            override suspend fun completePairing(serverId: String, pairingId: String, code: String, deviceName: String): ApiResult<PairingCompleted> {
+                completeCalls += 1
+                return if (completeCalls == 1) ApiResult.HttpError(403, "验证码无效")
+                else ApiResult.Success(PairingCompleted("retry-key"))
+            }
+        }
+        val repository = ConnectionRepository(store, clientFactory = { _, _ -> api })
+        assertTrue(repository.testConnection(BASE_URL_A) is ConnectionCheckResult.Reachable)
+
+        assertTrue(repository.pair(BASE_URL_A, "1111", "Phone") is PairingResult.Failed)
+        assertTrue(repository.pair(BASE_URL_A, "2222", "Phone") is PairingResult.Paired)
+
+        assertEquals(2, completeCalls)
+        assertEquals("retry-key", store.readDeviceKey(SERVER_A))
+        assertTrue(repository.pair(BASE_URL_A, "3333", "Phone") is PairingResult.Failed)
+        assertEquals(2, completeCalls)
+    }
+
+    @Test
     fun `invalid code makes no complete request or disk write`() = runTest {
         val store = store("invalid-code")
         var completeCalls = 0

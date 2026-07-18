@@ -245,7 +245,7 @@ open class EzApiClient(
                     setBearer()
                 }
                 connectionRef.set(connection)
-                if (callerClosed.get()) return@launch 
+                if (callerClosed.get()) return@launch
                 val status = connection.responseCode
                 if (status !in 200..299) {
                     val raw = connection.errorStream?.readTextUtf8().orEmpty()
