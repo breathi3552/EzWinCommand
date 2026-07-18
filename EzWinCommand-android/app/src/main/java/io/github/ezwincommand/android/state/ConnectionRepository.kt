@@ -84,7 +84,7 @@ class ConnectionRepository(
             }
         }
         if (operation.get() != op || pending != current) return PairingResult.UiInvalidated
-        pending = null
+        if (result is PairingResult.Paired) pending = null
         return result
     }
 

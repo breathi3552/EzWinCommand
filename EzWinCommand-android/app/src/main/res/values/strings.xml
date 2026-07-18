@@ -34,6 +34,13 @@
     <string name="main_pair_dialog_title">输入配对码</string>
     <string name="main_pair_dialog_positive">配对</string>
     <string name="main_pair_dialog_negative">取消</string>
+    <string name="main_device_name_label">设备名称</string>
+    <string name="main_device_name_edit">编辑设备名称</string>
+    <string name="main_device_name_confirm">确认</string>
+    <string name="main_device_name_blank">设备名称不能为空，已保留原名称。</string>
+    <string name="main_pairing_code_accessibility">4 位配对码</string>
+    <string name="main_pairing_code_cells_description">四位配对码输入区</string>
+    <string name="main_pairing_code_progress">4 位配对码，已输入 %1$d 位</string>
     <string name="main_sign_out">退出登录</string>
     <string name="main_error_prefix">错误：</string>
     <string name="main_session_restored">已连接。</string>

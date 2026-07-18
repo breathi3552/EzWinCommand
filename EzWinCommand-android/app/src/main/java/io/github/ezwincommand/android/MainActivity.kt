@@ -1,17 +1,29 @@
 package io.github.ezwincommand.android
 
 import android.app.Dialog
+import android.content.Context
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.text.Editable
 import android.text.InputFilter
+import android.text.TextWatcher
 import android.text.InputType
+import android.text.TextUtils
+import android.view.Gravity
+import android.view.inputmethod.InputMethodManager
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
@@ -44,6 +56,27 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.net.URI
 
+internal fun sanitizePairingCode(raw: CharSequence): String = raw.filter { it in '0'..'9' }.take(4).toString()
+
+internal fun truncateDeviceName(raw: String, maxCodePoints: Int = 128): String {
+    val trimmed = raw.trim()
+    val count = trimmed.codePointCount(0, trimmed.length)
+    if (count <= maxCodePoints) return trimmed
+    return trimmed.substring(0, trimmed.offsetByCodePoints(0, maxCodePoints))
+}
+
+internal fun resolveReadableDeviceName(marketName: String?, manufacturer: String?, model: String?, fallback: String): String {
+    marketName?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+    val maker = manufacturer?.trim().orEmpty()
+    val product = model?.trim().orEmpty()
+    val buildName = when {
+        maker.isEmpty() -> product
+        product.isEmpty() -> maker
+        maker.equals(product, ignoreCase = true) -> maker
+        else -> "$maker $product"
+    }
+    return buildName.ifBlank { fallback }
+}
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val sessionStore: ServerSessionStore by lazy {
@@ -64,6 +97,7 @@ class MainActivity : AppCompatActivity() {
     private var activeLoadJob: Job? = null
     private val controlPageGate = ControlPageGate()
     private var activeReadyState: ControlUiState.Ready? = null
+    private var pairingDialogGeneration = 0L
 
     override fun onStart() {
         super.onStart()
@@ -77,6 +111,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        pairingDialogGeneration += 1
         discoveryClient.stop()
         connectionRepository.cancelCurrent()
         activeController?.cancelTracking()
@@ -101,6 +136,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.pairingCodeInput.inputType = InputType.TYPE_CLASS_NUMBER
         binding.connectionCard.visibility = View.GONE
+        renderServerLists()
 
         lifecycleScope.launch {
             connectionRepository.migrateLegacy()
@@ -142,10 +178,45 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun serverButton(name: String, serverId: String, status: String, action: () -> Unit) = Button(this).apply {
-        text = "$name · ${serverId.take(8)} · $status"
-        isAllCaps = false
+    private fun serverButton(name: String, serverId: String, status: String, action: () -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundResource(R.drawable.ez_input)
+        setPadding(dp(16), dp(12), dp(16), dp(12))
+        minimumHeight = dp(72)
+        isClickable = true
+        isFocusable = true
+        contentDescription = "$name, $serverId, $status"
         setOnClickListener { action() }
+        layoutParams = verticalParams(dp(8))
+
+        addView(TextView(this@MainActivity).apply {
+            text = name
+            setTextColor(getColor(R.color.ezwin_text))
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(TextView(this@MainActivity).apply {
+                text = serverId.take(8)
+                setTextColor(getColor(R.color.ezwin_text_muted))
+                textSize = 13f
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(this@MainActivity).apply {
+                text = status
+                setTextColor(getColor(when (status) {
+                    getString(R.string.main_server_online) -> R.color.ezwin_secondary
+                    getString(R.string.main_server_repair) -> R.color.ezwin_warning
+                    else -> R.color.ezwin_text_muted
+                }))
+                textSize = 13f
+            })
+        }, verticalParams(dp(4)))
     }
 
     private fun connectFromList(baseUrl: String) {
@@ -202,6 +273,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPairingDialog(baseUrl: String) {
+        val generation = ++pairingDialogGeneration
         val dialog = Dialog(this)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -209,32 +281,261 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(32), dp(28), dp(32), dp(24))
         }
         content.addView(dialogTitle(getString(R.string.main_pair_dialog_title)))
-        val codeInput = dialogInput(getString(R.string.main_pairing_code_hint)).apply {
-            setText(binding.pairingCodeInput.text?.toString().orEmpty())
-            inputType = InputType.TYPE_CLASS_TEXT
-            filters = arrayOf(InputFilter.LengthFilter(4))
+        val codeInput = pairingCodeInput()
+        val codeCells = pairingCodeCells(codeInput)
+        content.addView(codeCells.first, verticalParams(dp(16)))
+        content.addView(TextView(this).apply {
+            setText(R.string.main_device_name_label)
+            setTextColor(getColor(R.color.ezwin_text_muted))
+            textSize = 13f
+        }, verticalParams(dp(18)))
+        val nameViews = pairingNameViews(readableDeviceName(), codeInput)
+        content.addView(nameViews.display, verticalParams(dp(6)))
+        content.addView(nameViews.editor, verticalParams(dp(6)))
+        val status = TextView(this).apply {
+            setTextColor(getColor(R.color.ezwin_error))
+            textSize = 13f
+            visibility = View.GONE
         }
-        val nameInput = dialogInput(getString(R.string.main_device_name_hint)).apply {
-            setText(binding.deviceNameInput.text?.toString().orEmpty().ifBlank { getString(R.string.main_device_default) })
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME
-        }
-        content.addView(codeInput, verticalParams(12))
-        content.addView(nameInput, verticalParams(12))
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.addView(dialogButton(getString(R.string.main_pair_dialog_negative)) { dialog.dismiss() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(12) })
-        actions.addView(dialogButton(getString(R.string.main_pair_dialog_positive)) {
-            val code = codeInput.text?.toString().orEmpty().trim()
-            val name = nameInput.text?.toString().orEmpty().trim().ifBlank { getString(R.string.main_device_default) }
-            binding.pairingCodeInput.setText(code)
-            binding.deviceNameInput.setText(name)
-            dialog.dismiss()
-            pairWithInput(baseUrl, code, name)
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        content.addView(actions, verticalParams(16))
+        content.addView(status, verticalParams(dp(8)))
+        val cancel = dialogButton(getString(R.string.main_pair_dialog_negative)) { dialog.cancel() }
+        content.addView(cancel, verticalParams(dp(18)))
+        bindPairingDialog(dialog, generation, baseUrl, codeInput, codeCells.second, nameViews, status, cancel)
         dialog.setContentView(content)
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         dialog.show()
         dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.9f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+        codeInput.post {
+            if (pairingDialogGeneration == generation && dialog.isShowing) {
+                codeInput.requestFocus()
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(codeInput, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
+    private data class PairingNameViews(
+        val display: LinearLayout,
+        val editor: LinearLayout,
+        val value: TextView,
+        val input: EditText,
+        val edit: ImageButton,
+        val confirm: ImageButton,
+    )
+
+    private fun pairingCodeInput() = EditText(this).apply {
+        id = View.generateViewId()
+        inputType = InputType.TYPE_CLASS_NUMBER
+        setTextColor(Color.TRANSPARENT)
+        setHintTextColor(Color.TRANSPARENT)
+        background = ColorDrawable(Color.TRANSPARENT)
+        isCursorVisible = false
+        alpha = 0.02f
+        contentDescription = getString(R.string.main_pairing_code_accessibility)
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        isSingleLine = true
+        filters = arrayOf(InputFilter.LengthFilter(16))
+    }
+
+    private fun pairingCodeCells(input: EditText): Pair<FrameLayout, Array<TextView>> {
+        val cells = Array(4) {
+            TextView(this).apply {
+                gravity = Gravity.CENTER
+                textSize = 22f
+                setTextColor(getColor(R.color.ezwin_text))
+                setBackgroundResource(R.drawable.ez_input)
+                minimumHeight = dp(52)
+                isClickable = true
+                isFocusable = false
+                setOnClickListener { if (isEnabled) input.requestFocus() }
+            }
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            contentDescription = getString(R.string.main_pairing_code_cells_description)
+            cells.forEachIndexed { index, cell ->
+                addView(cell, LinearLayout.LayoutParams(0, dp(52), 1f).apply { if (index > 0) leftMargin = dp(8) })
+            }
+        }
+        return FrameLayout(this).apply {
+            addView(row, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(input, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)))
+        } to cells
+    }
+
+    private fun pairingNameViews(initialName: String, codeInput: EditText): PairingNameViews {
+        val display = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val value = TextView(this).apply {
+            text = initialName
+            setTextColor(getColor(R.color.ezwin_text))
+            textSize = 16f
+            maxLines = 2
+        }
+        val edit = ImageButton(this).apply {
+            id = View.generateViewId()
+            setImageResource(R.drawable.ic_edit_24)
+            setBackgroundColor(Color.TRANSPARENT)
+            contentDescription = getString(R.string.main_device_name_edit)
+            minimumWidth = dp(48)
+            minimumHeight = dp(48)
+        }
+        display.addView(value, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        display.addView(edit, LinearLayout.LayoutParams(dp(48), dp(48)))
+        val editor = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        val input = dialogInput(getString(R.string.main_device_name_hint)).apply {
+            id = View.generateViewId()
+            setText(initialName)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME
+            maxLines = 2
+        }
+        val confirm = ImageButton(this).apply {
+            id = View.generateViewId()
+            setImageResource(R.drawable.ic_check_24)
+            setBackgroundColor(Color.TRANSPARENT)
+            contentDescription = getString(R.string.main_device_name_confirm)
+            minimumWidth = dp(40)
+            minimumHeight = dp(40)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        editor.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(4) })
+        editor.addView(confirm, LinearLayout.LayoutParams(dp(40), dp(40)))
+        edit.setOnClickListener {
+            input.setText(value.text)
+            input.setSelection(input.text?.length ?: 0)
+            display.visibility = View.GONE
+            editor.visibility = View.VISIBLE
+            input.requestFocus()
+        }
+        confirm.setOnClickListener {
+            val candidate = truncateDeviceName(input.text?.toString().orEmpty())
+            if (candidate.isBlank()) Toast.makeText(this, R.string.main_device_name_blank, Toast.LENGTH_SHORT).show()
+            else {
+                value.text = candidate
+                input.setText(candidate)
+                editor.visibility = View.GONE
+                display.visibility = View.VISIBLE
+                codeInput.requestFocus()
+            }
+        }
+        return PairingNameViews(display, editor, value, input, edit, confirm)
+    }
+
+    private fun readableDeviceName(): String {
+        val marketName = runCatching { Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME) }.getOrNull()
+        return resolveReadableDeviceName(marketName, Build.MANUFACTURER, Build.MODEL, getString(R.string.main_device_default))
+    }
+
+    private fun bindPairingDialog(
+        dialog: Dialog,
+        generation: Long,
+        baseUrl: String,
+        codeInput: EditText,
+        cells: Array<TextView>,
+        names: PairingNameViews,
+        status: TextView,
+        cancel: Button,
+    ) {
+        var code = ""
+        var submitting = false
+        var armed = true
+        var userRevision = 0L
+        var rendering = false
+        fun isCurrent() = pairingDialogGeneration == generation && dialog.isShowing && !isFinishing &&
+            !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed)
+        fun renderCode() {
+            cells.forEachIndexed { index, cell ->
+                cell.text = code.getOrNull(index)?.toString().orEmpty()
+                cell.alpha = if (submitting) 0.45f else 1f
+            }
+            codeInput.contentDescription = getString(R.string.main_pairing_code_progress, code.length)
+        }
+        fun renderSubmitting() {
+            codeInput.isEnabled = !submitting
+            cells.forEach { it.isEnabled = !submitting }
+            names.edit.isEnabled = !submitting
+            names.input.isEnabled = !submitting
+            names.confirm.isEnabled = !submitting
+            cancel.isEnabled = !submitting
+            dialog.setCancelable(!submitting)
+            dialog.setCanceledOnTouchOutside(false)
+            if (submitting) {
+                status.setTextColor(getColor(R.color.ezwin_text_muted))
+                status.setText(R.string.main_status_pairing)
+                status.visibility = View.VISIBLE
+            }
+            renderCode()
+        }
+        fun submitIfReady() {
+            if (code.length != 4 || !armed || submitting || !isCurrent()) return
+            submitting = true
+            armed = false
+            val submittedCode = code
+            val submittedName = names.value.text.toString()
+            val submittedRevision = userRevision
+            renderSubmitting()
+            lifecycleScope.launch {
+                val result = connectionRepository.pair(baseUrl, submittedCode, submittedName)
+                if (!isCurrent()) return@launch
+                when (result) {
+                    is PairingResult.Paired -> {
+                        if (userRevision != submittedRevision) return@launch
+                        pairingDialogGeneration += 1
+                        dialog.dismiss()
+                        showTopMessage(getString(R.string.main_pairing_success))
+                        renderEffect(AndroidUiEffect.OpenControl(result.session.serverId, result.session.baseUrl))
+                    }
+                    PairingResult.UiInvalidated -> {
+                        pairingDialogGeneration += 1
+                        dialog.dismiss()
+                    }
+                    is PairingResult.Failed -> {
+                        submitting = false
+                        armed = false
+                        status.setTextColor(getColor(R.color.ezwin_error))
+                        status.text = errorMessage(result.message)
+                        status.visibility = View.VISIBLE
+                        renderSubmitting()
+                        codeInput.requestFocus()
+                    }
+                }
+            }
+        }
+        codeInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(editable: Editable?) {
+                if (rendering) return
+                val normalized = sanitizePairingCode(editable ?: "")
+                if (editable?.toString() != normalized) {
+                    rendering = true
+                    codeInput.setText(normalized)
+                    codeInput.setSelection(normalized.length)
+                    rendering = false
+                }
+                if (normalized != code) {
+                    code = normalized
+                    userRevision += 1
+                    armed = true
+                    status.visibility = View.GONE
+                }
+                renderCode()
+                submitIfReady()
+            }
+        })
+        dialog.setOnCancelListener {
+            if (pairingDialogGeneration == generation) {
+                pairingDialogGeneration += 1
+                connectionRepository.cancelCurrent()
+            }
+        }
+        dialog.setOnDismissListener { if (pairingDialogGeneration == generation) pairingDialogGeneration += 1 }
+        cancel.setOnClickListener { if (!submitting) dialog.cancel() }
     }
 
     private fun readBaseUrl(): String? {

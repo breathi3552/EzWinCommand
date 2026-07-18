@@ -234,7 +234,8 @@ function pcRenderPairings(data) {
     const root = document.getElementById("pc-pairing-list");
     if (!root) return;
     root.replaceChildren();
-    const pairings = (data && Array.isArray(data.pairings)) ? data.pairings : [];
+    const pairings = ((data && Array.isArray(data.pairings)) ? data.pairings : [])
+        .filter(pairing => pairing.status === "pending" || pairing.status === "locked");
     if (pairings.length === 0) {
         const empty = document.createElement("p");
         empty.className = "pairing-empty";
@@ -244,9 +245,8 @@ function pcRenderPairings(data) {
     }
 
     for (const pairing of pairings) {
-        const active = pairing.status === "pending" || pairing.status === "locked";
         const card = document.createElement("article");
-        card.className = `pairing-card pairing-card--${active ? "active" : "terminal"}`;
+        card.className = "pairing-card pairing-card--active";
 
         const header = document.createElement("div");
         header.className = "pairing-header";
@@ -260,7 +260,7 @@ function pcRenderPairings(data) {
         card.appendChild(header);
 
         const code = String(pairing.code || "");
-        if (active && /^\d{4}$/.test(code)) {
+        if (/^\d{4}$/.test(code)) {
             const codeElement = document.createElement("div");
             codeElement.className = "pairing-code";
             codeElement.textContent = code;
@@ -270,12 +270,10 @@ function pcRenderPairings(data) {
 
         const meta = document.createElement("div");
         meta.className = "pairing-meta";
-        if (active) {
-            const countdown = document.createElement("span");
-            countdown.className = "pairing-countdown";
-            countdown.textContent = `剩余 ${Math.max(0, Number(pairing.expires_in) || 0)} 秒`;
-            meta.appendChild(countdown);
-        }
+        const countdown = document.createElement("span");
+        countdown.className = "pairing-countdown";
+        countdown.textContent = `剩余 ${Math.max(0, Number(pairing.expires_in) || 0)} 秒`;
+        meta.appendChild(countdown);
         const status = document.createElement("span");
         status.className = `pairing-status pairing-status--${String(pairing.status || "unknown")}`;
         status.textContent = pcPairingStatus(pairing.status);
