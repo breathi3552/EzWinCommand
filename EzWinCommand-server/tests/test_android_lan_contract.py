@@ -168,6 +168,22 @@ def test_device_list_allows_loopback_and_requires_remote_bearer() -> None:
     unauthorized = _remote_request(client, "GET", "/api/devices")
     assert unauthorized.status_code == 401
 
+
+
+def test_remote_device_revoke_removes_authorization() -> None:
+    client = _make_client()
+    key = "device-abc123"
+    auth_manager = client.app.state.auth_manager
+    auth_manager.authorized_keys.add(key)
+    revoked: list[str] = []
+    client.app.state.media_event_hub = type("Hub", (), {"revoke": lambda _, digest: revoked.append(digest)})()
+
+    response = _remote_request(client, "DELETE", f"/api/devices/{key}", headers={"Authorization": f"Bearer {key}"})
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert revoked == [__import__("hashlib").sha256(key.encode()).hexdigest()]
+
 def test_local_pairings_code_and_remote_not_found() -> None:
     client = _make_client()
     local = client.get("/api/local/pairings")

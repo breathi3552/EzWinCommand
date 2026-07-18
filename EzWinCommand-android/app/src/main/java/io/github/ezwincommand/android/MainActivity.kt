@@ -273,6 +273,7 @@ class MainActivity : AppCompatActivity() {
         activeController?.close()
         activeController = null
         activeBaseUrl = null
+        binding.pairingContainer.visibility = View.VISIBLE
         binding.titleText.visibility = View.VISIBLE
         binding.connectionCard.visibility = View.GONE
         binding.manualToggle.setText(R.string.main_manual_collapsed)
@@ -296,6 +297,7 @@ class MainActivity : AppCompatActivity() {
     private fun openControl(serverId: String, baseUrl: String) {
         closeMediaSession()
         activeController?.close()
+        binding.pairingContainer.visibility = View.GONE
         binding.titleText.visibility = View.GONE
         val screen = ControlScreen(this)
         binding.connectionCard.visibility = View.GONE
@@ -440,11 +442,17 @@ class MainActivity : AppCompatActivity() {
         revokeInvoker = { value ->
             lifecycleScope.launch {
                 val revoked = controller.revokeDevice(value)
-                showTopMessage(if (revoked) getString(R.string.control_revoke_success) else errorMessage(getString(R.string.control_revoke_failed)))
-                if (revoked && value == activeReadyState?.currentDeviceKey) {
+                if (!revoked) {
+                    showTopMessage(errorMessage(getString(R.string.control_revoke_failed)))
+                    return@launch
+                }
+                if (value == activeReadyState?.currentDeviceKey) {
+                    connectionRepository.removeSession(serverId)
+                    showTopMessage(getString(R.string.control_revoke_success))
                     returnToPairing(baseUrl)
                     return@launch
                 }
+                showTopMessage(getString(R.string.control_revoke_success))
                 val refreshed = controller.load()
                 coordinator.updateControlState(serverId, baseUrl, refreshed)
                 screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() })
@@ -467,6 +475,7 @@ class MainActivity : AppCompatActivity() {
         activeController?.close()
         activeController = null
         activeBaseUrl = null
+        binding.pairingContainer.visibility = View.VISIBLE
         binding.titleText.visibility = View.VISIBLE
         binding.controlContainer.removeAllViews()
         binding.connectionCard.visibility = View.VISIBLE

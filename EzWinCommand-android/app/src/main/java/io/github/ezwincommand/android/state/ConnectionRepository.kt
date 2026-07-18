@@ -118,6 +118,7 @@ class ConnectionRepository(
     }
 
     fun invalidate(serverId: String) { sessions.markRepair(serverId) }
+    fun removeSession(serverId: String): Boolean = sessions.remove(serverId)
     fun cancelCurrent() { operation.incrementAndGet(); pending = null }
     fun session(serverId: String) = sessions.get(serverId)
     fun deviceKey(serverId: String) = sessions.readDeviceKey(serverId)

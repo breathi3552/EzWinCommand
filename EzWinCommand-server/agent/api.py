@@ -371,6 +371,15 @@ async def local_pairings(request: Request):
 async def list_devices(request: Request):
     """列出已配对设备；鉴权中间件仅允许本机无凭据访问。"""
     return {"devices": _get_auth_manager(request).list_devices()}
+
+
+@router.delete("/api/devices/{device_key}")
+async def revoke_device(device_key: str, request: Request):
+    """撤销指定设备授权；成功后立即终止该设备的活动媒体流。"""
+    success = _get_auth_manager(request).remove_device(device_key)
+    if success:
+        request.app.state.media_event_hub.revoke(hashlib.sha256(device_key.encode()).hexdigest())
+    return {"success": success}
 class _RenameBody(BaseModel):
     """设备重命名请求体。"""
     name: str
