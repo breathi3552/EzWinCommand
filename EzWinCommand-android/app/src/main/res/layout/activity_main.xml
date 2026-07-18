@@ -8,172 +8,191 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:fillViewport="true">
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical">
-
+            android:orientation="vertical"
+            android:paddingBottom="24dp">
             <TextView
                 android:id="@+id/titleText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="24dp"
                 android:layout_marginEnd="24dp"
-                android:layout_marginTop="24dp"
-                android:gravity="center"
                 android:text="@string/app_name"
                 android:textColor="@color/ezwin_text"
-                android:textSize="24sp"
+                android:textSize="26sp"
                 android:textStyle="bold" />
-
-
+            <TextView
+                android:id="@+id/scanStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/main_scan_idle"
+                android:textColor="@color/ezwin_text_muted"
+                android:textSize="14sp" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:layout_marginTop="16dp"
+                android:gravity="center_vertical">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/main_nearby_title"
+                    android:textColor="@color/ezwin_text"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+                <Button
+                    android:id="@+id/refreshButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/ez_button_primary"
+                    android:contentDescription="@string/main_refresh"
+                    android:minHeight="44dp"
+                    android:text="@string/main_refresh"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ezwin_text" />
+            </LinearLayout>
+            <LinearLayout
+                android:id="@+id/nearbyList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/ez_panel"
+                android:orientation="vertical"
+                android:padding="16dp">
+                <TextView
+                    android:id="@+id/nearbyEmptyText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/main_nearby_empty"
+                    android:textColor="@color/ezwin_text_muted" />
+            </LinearLayout>
+            <TextView
+                android:id="@+id/historyTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:layout_marginTop="24dp"
+                android:text="@string/main_history_title"
+                android:textColor="@color/ezwin_text"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+            <LinearLayout
+                android:id="@+id/historyList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/ez_panel"
+                android:orientation="vertical"
+                android:padding="16dp">
+                <TextView
+                    android:id="@+id/historyEmptyText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/main_history_empty"
+                    android:textColor="@color/ezwin_text_muted" />
+            </LinearLayout>
+            <Button
+                android:id="@+id/manualToggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/ez_panel"
+                android:gravity="start|center_vertical"
+                android:minHeight="52dp"
+                android:text="@string/main_manual_collapsed"
+                android:textAllCaps="false"
+                android:textColor="@color/ezwin_text" />
             <LinearLayout
                 android:id="@+id/connectionCard"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="24dp"
                 android:layout_marginEnd="24dp"
-                android:layout_marginTop="20dp"
+                android:layout_marginTop="8dp"
                 android:background="@drawable/ez_panel"
-                android:orientation="vertical">
-
+                android:orientation="vertical"
+                android:padding="16dp"
+                android:visibility="gone">
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="@string/main_pc_address_label"
                     android:textColor="@color/ezwin_text"
-                    android:textSize="16sp"
                     android:textStyle="bold" />
-
-
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:orientation="horizontal">
-
+                    android:layout_marginTop="8dp">
                     <EditText
                         android:id="@+id/pcAddressInput"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:autofillHints="url"
                         android:background="@drawable/ez_input"
                         android:hint="@string/main_pc_address_hint"
                         android:inputType="textUri"
                         android:minHeight="48dp"
-                        android:textColor="@color/ezwin_text"
-                        android:textColorHint="@color/ezwin_text_muted" />
-
+                        android:textColor="@color/ezwin_text" />
                     <EditText
                         android:id="@+id/pcPortInput"
-                        android:layout_width="96dp"
+                        android:layout_width="92dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="12dp"
-                        android:autofillHints="postalCode"
+                        android:layout_marginStart="8dp"
                         android:background="@drawable/ez_input"
                         android:hint="@string/main_pc_port_hint"
                         android:inputType="number"
                         android:minHeight="48dp"
-                        android:textColor="@color/ezwin_text"
-                        android:textColorHint="@color/ezwin_text_muted" />
+                        android:textColor="@color/ezwin_text" />
                 </LinearLayout>
-
                 <Button
                     android:id="@+id/testConnectionButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:layout_marginTop="8dp"
                     android:background="@drawable/ez_button_primary"
-                    android:minHeight="52dp"
                     android:text="@string/main_test_connection"
                     android:textAllCaps="false"
-                    android:textColor="@color/ezwin_text"
-                    android:textStyle="bold" />
+                    android:textColor="@color/ezwin_text" />
             </LinearLayout>
-
             <LinearLayout
                 android:id="@+id/pairingCard"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="24dp"
-                android:layout_marginEnd="24dp"
-                android:layout_marginTop="20dp"
-                android:background="@drawable/ez_panel"
-                android:visibility="gone"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/main_pairing_label"
-                    android:textColor="@color/ezwin_text"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/main_pairing_help"
-                    android:textColor="@color/ezwin_text_muted"
-                    android:textSize="12sp" />
-
+                android:visibility="gone">
                 <EditText
                     android:id="@+id/pairingCodeInput"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:autofillHints="smsOTP"
-                    android:background="@drawable/ez_input"
-                    android:fontFamily="monospace"
-                    android:gravity="center"
-                    android:hint="@string/main_pairing_code_hint"
-                    android:inputType="text"
-                    android:letterSpacing="0.3"
-                    android:maxLength="4"
-                    android:minHeight="64dp"
-                    android:textColor="@color/ezwin_text"
-                    android:textColorHint="@color/ezwin_text_muted"
-                    android:textSize="28sp"
-                    android:textStyle="bold" />
-
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1"
+                    android:inputType="number"
+                    android:maxLength="4" />
                 <EditText
                     android:id="@+id/deviceNameInput"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:autofillHints="name"
-                    android:background="@drawable/ez_input"
-                    android:hint="@string/main_device_name_hint"
-                    android:inputType="textPersonName"
-                    android:minHeight="48dp"
-                    android:textColor="@color/ezwin_text"
-                    android:textColorHint="@color/ezwin_text_muted" />
-
-                <Button
-                    android:id="@+id/pairButton"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/ez_button_primary"
-                    android:minHeight="52dp"
-                    android:text="@string/main_pair_button"
-                    android:textAllCaps="false"
-                    android:textColor="@color/ezwin_text"
-                    android:textStyle="bold" />
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+                <Button android:id="@+id/pairButton" android:layout_width="1dp" android:layout_height="1dp" />
             </LinearLayout>
-
             <FrameLayout
                 android:id="@+id/controlContainer"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="0dp" />
-
+                android:layout_height="wrap_content" />
         </LinearLayout>
     </ScrollView>
-
     <TextView
         android:id="@+id/connectionStatusText"
         android:layout_width="match_parent"

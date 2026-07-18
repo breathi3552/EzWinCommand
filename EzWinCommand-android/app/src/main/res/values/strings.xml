@@ -1,6 +1,22 @@
 <resources>
     <string name="app_name">EzWinCommand</string>
-    <string name="main_activity_subtitle"></string>
+    <string name="main_scan_idle">正在准备扫描</string>
+    <string name="main_scan_scanning">正在扫描局域网服务端…</string>
+    <string name="main_scan_finished">扫描完成</string>
+    <string name="main_nearby_title">附近服务端</string>
+    <string name="main_nearby_empty">暂未发现服务端</string>
+    <string name="main_history_title">历史服务端</string>
+    <string name="main_history_empty">暂无已配对服务端</string>
+    <string name="main_manual_collapsed">手动连接</string>
+    <string name="main_manual_expanded">收起手动连接</string>
+    <string name="main_refresh">刷新</string>
+    <string name="main_server_online">在线</string>
+    <string name="main_server_offline">离线</string>
+    <string name="main_server_repair">需重新配对</string>
+    <string name="main_server_connect">连接</string>
+    <string name="main_server_retry">重试</string>
+    <string name="main_server_pair">开始配对</string>
+    <string name="main_activity_subtitle"> </string>
     <string name="main_status_idle">输入电脑 IP 后连接。</string>
     <string name="main_status_restoring">恢复会话…</string>
     <string name="main_status_checking">连接中…</string>
@@ -13,13 +29,11 @@
     <string name="main_test_connection">连接</string>
     <string name="main_pairing_label">配对</string>
     <string name="main_pairing_code_hint">4 位配对码</string>
-    <string name="main_pairing_help">在电脑端生成配对码后输入。</string>
     <string name="main_device_name_hint">设备名（可选）</string>
     <string name="main_pair_button">配对</string>
     <string name="main_pair_dialog_title">输入配对码</string>
     <string name="main_pair_dialog_positive">配对</string>
     <string name="main_pair_dialog_negative">取消</string>
-    <string name="main_back_to_pairing">返回配对设备</string>
     <string name="main_sign_out">退出登录</string>
     <string name="main_error_prefix">错误：</string>
     <string name="main_session_restored">已连接。</string>
@@ -30,6 +44,7 @@
     <string name="main_device_default">Android</string>
     <string name="main_port_default">8080</string>
     <string name="main_unknown_error">未知错误</string>
+    <string name="main_back_to_pairing">返回配对页</string>
     <string name="control_loading">加载中…</string>
     <string name="control_empty_state">暂无插件</string>
     <string name="control_no_actions">暂无插件</string>
@@ -48,6 +63,12 @@
     <string name="control_rename_device_title">重命名</string>
     <string name="control_rename_device_success">已重命名。</string>
     <string name="control_rename_device_failed">重命名失败。</string>
+    <string name="control_device_management">设备管理</string>
+    <string name="control_delete_device">删除</string>
+    <string name="control_rename_device_description">重命名设备“%1$s”</string>
+    <string name="control_delete_device_description">删除设备“%1$s”</string>
+    <string name="control_delete_device_title">删除设备</string>
+    <string name="control_delete_device_confirm">确定删除“%1$s”吗？</string>
     <string name="media_title">媒体</string>
     <string name="media_loading">正在读取媒体状态…</string>
     <string name="media_no_content">暂无播放内容</string>
@@ -73,4 +94,5 @@
     <string name="media_devices_loading">正在读取设备…</string>
     <string name="media_cover_description">正在播放：%1$s，艺术家：%2$s</string>
     <string name="media_cover_unavailable">未检测到正在播放的媒体</string>
+    <string name="media_refresh">刷新媒体状态</string>
 </resources>

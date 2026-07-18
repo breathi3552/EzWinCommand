@@ -15,8 +15,10 @@ from agent.api import MediaEventHub, router as api_router
 from agent.auth import AuthManager, create_auth_middleware
 from agent.command_tasks import AsyncCommandService, CommandTaskStore
 from agent.device_store import DeviceStore
+from agent.discovery import DiscoveryPublisher
 from agent.dispatcher import Dispatcher
 from agent.firewall import add_rule
+from agent.server_identity import load_server_identity
 import config
 from media.service import MediaService
 from plugins.media import MediaPlugin
@@ -29,6 +31,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 def create_app(media_service: MediaService | None = None) -> FastAPI:
     service = media_service or MediaService()
+    identity = load_server_identity(BASE_DIR / "agent" / "server_identity.json", "EzWinCommand Server")
+    publisher = DiscoveryPublisher(identity, config.PORT, config.HOST)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -36,8 +40,12 @@ def create_app(media_service: MediaService | None = None) -> FastAPI:
         application.state.media_event_hub = hub
         try:
             service.start()
+            # 发布失败仅隔离发现能力，HTTP 服务继续启动。
+            await asyncio.to_thread(publisher.start)
             yield
         finally:
+            # 先注销 mDNS，再停止媒体服务，避免退出时留下陈旧服务记录。
+            await asyncio.to_thread(publisher.close)
             hub.close()
             service.stop()
     application = FastAPI(title="EzWinCommand Server", lifespan=lifespan)
@@ -46,14 +54,24 @@ def create_app(media_service: MediaService | None = None) -> FastAPI:
     dispatcher.register_plugin(MediaPlugin(service))
     application.state.dispatcher = dispatcher
     application.state.media_service = service
+    application.state.server_identity = identity
+    application.state.discovery_publisher = publisher
     task_store = CommandTaskStore(BASE_DIR / "agent" / "command_tasks.json")
     application.state.async_command_service = AsyncCommandService(dispatcher, task_store)
     application.include_router(api_router)
 
     device_store = DeviceStore(BASE_DIR / "agent" / "devices.json")
-    auth_manager = AuthManager(device_store)
+    auth_manager = AuthManager(device_store, server_id=identity.server_id)
     application.state.auth_manager = auth_manager
+    application.state.pairing_manager = auth_manager
     application.add_middleware(create_auth_middleware(auth_manager))
+
+    @application.middleware("http")
+    async def revalidate_web_shell(request, call_next):
+        response = await call_next(request)
+        if request.url.path in {"/", "/index.html"}:
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     web_dir = BASE_DIR / "web"
     if web_dir.is_dir():
@@ -66,7 +84,8 @@ app = create_app()
 
 def main() -> None:
     add_rule(config.PORT)
-    uvicorn_config = uvicorn.Config(app, host=config.HOST, port=config.PORT, log_level="info")
+    runtime_app = create_app()
+    uvicorn_config = uvicorn.Config(runtime_app, host=config.HOST, port=config.PORT, log_level="info")
     server = uvicorn.Server(uvicorn_config)
 
     def _on_tray_exit() -> None:

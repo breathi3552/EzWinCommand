@@ -1,5 +1,12 @@
 package io.github.ezwincommand.android.network
 
+import kotlinx.coroutines.runBlocking
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -53,6 +60,25 @@ class EzApiClientTest {
         assertEquals(403, result.status)
         assertEquals("配对码无效或已锁定", result.message)
     }
+    @Test
+    fun `complete pairing extracts FastAPI detail as short message`() = runBlocking {
+        val client = object : EzApiClient("http://192.168.1.10:8080", deviceKeyProvider = { null }) {
+            override fun openConnection(path: String): HttpURLConnection = object : HttpURLConnection(URL("http://192.168.1.10:8080$path")) {
+                override fun getResponseCode() = 401
+                override fun getErrorStream(): InputStream = ByteArrayInputStream("{\"detail\":\"未授权\"}".toByteArray())
+                override fun getOutputStream() = ByteArrayOutputStream()
+                override fun disconnect() = Unit
+                override fun usingProxy() = false
+                override fun connect() = Unit
+            }
+        }
+
+        val result = client.completePairing("server-1", "pair-1", "1234")
+
+        assertEquals(ApiResult.HttpError(401, "未授权"), result)
+        client.close()
+    }
+
     @Test
     fun `close cancels media scope and is idempotent`() {
         val client = EzApiClient("http://127.0.0.1:8080", deviceKeyProvider = { null })

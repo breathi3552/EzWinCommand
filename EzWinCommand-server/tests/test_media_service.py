@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
@@ -16,7 +17,7 @@ class FakeAdapter:
         self.closed = False
         self.close_count = 0
         self.close_threads: list[str] = []
-        self.media = _MediaReading(True, "Song", "Artist", "playing", b"cover-a", "image/png")
+        self.media = _MediaReading(True, "Song", "Artist", "playing", source_app_user_model_id="player")
         self.audio = _AudioReading(
             37,
             (AudioEndpoint("render-1", "Speakers"),),
@@ -33,6 +34,10 @@ class FakeAdapter:
     async def read_media(self) -> _MediaReading:
         self.thread_names.append(threading.current_thread().name)
         return self.media
+
+    async def read_artwork(self):
+        self.thread_names.append(threading.current_thread().name)
+        return b"cover-a", "image/png"
 
     def read_audio(self) -> _AudioReading:
         self.thread_names.append(threading.current_thread().name)
@@ -151,26 +156,15 @@ def test_initialize_does_not_wait_for_first_refresh_and_refresh_can_finish_late(
         gate.set()
         service.stop()
 
-def test_command_returns_while_media_refresh_is_blocked() -> None:
-    gate = threading.Event()
-    refresh_started = threading.Event()
-
-    class HangingRefresh(FakeAdapter):
-        async def read_media(self):
-            refresh_started.set()
-            await asyncio.to_thread(gate.wait)
-            return self.media
-
-    adapter = HangingRefresh()
+def test_command_waits_for_post_command_refresh_without_polling() -> None:
+    adapter = FakeAdapter()
     service = MediaService(lambda: adapter)
     service.start()
     try:
-        assert refresh_started.wait(1)
         result = service.submit("play_pause").result(timeout=1)
         assert result.success is True
         assert adapter.commands == [("play_pause", None, None)]
     finally:
-        gate.set()
         service.stop()
 
 def test_service_single_thread_revision_and_artwork_are_independent() -> None:
@@ -218,74 +212,125 @@ def test_cover_cache_keeps_replay_window_and_uses_mime_in_hash() -> None:
     assert service.get_cover("not-a-token") is None
 
 
-def test_runtime_full_domain_failures_close_and_rebootstrap() -> None:
+def test_explicit_dirty_full_domain_failures_preserve_state_and_log_error() -> None:
     class FailingAfterBootstrap(FakeAdapter):
         def __init__(self) -> None:
             super().__init__()
-            self.media_reads = 0
+            self.fail = False
 
         async def read_media(self):
-            self.media_reads += 1
-            if self.media_reads > 1:
+            if self.fail:
                 raise RuntimeError("stale media adapter")
             return await super().read_media()
 
         def read_audio(self):
-            if self.media_reads > 1:
+            if self.fail:
                 raise RuntimeError("stale audio adapter")
             return super().read_audio()
 
-    first = FailingAfterBootstrap()
-    recovered = FakeAdapter()
-    adapters = iter((first, recovered))
-    service = MediaService(lambda: next(adapters))
+    adapter = FailingAfterBootstrap()
+    service = MediaService(lambda: adapter)
     service.start()
     try:
-        for _ in range(40):
-            if first.closed and service.snapshot().error is None and service.snapshot().available:
-                break
-            threading.Event().wait(0.1)
-        assert first.closed is True
-        assert first.close_count == 1
-        assert first.close_threads == ["EzMediaLoop"]
-        assert service.snapshot().error is None
-        assert service.submit("play_pause").result(timeout=1).success is True
+        service.request_refresh({"devices", "audio", "media"}).result(timeout=1)
+        adapter.fail = True
+        adapter.notify()
+        threading.Event().wait(0.1)
+        assert service.snapshot().available is True
+        assert service.snapshot().error in {"媒体: 读取状态失败", "音频: 读取状态失败"}
     finally:
         service.stop()
-    assert recovered.close_count == 1
 
 
-def test_single_domain_failures_preserve_other_state_without_restart() -> None:
-    class MediaOnlyFailure(FakeAdapter):
-        def __init__(self) -> None:
-            super().__init__()
-            self.media_reads = 0
-
+def test_idle_service_does_not_read_again_until_dirty() -> None:
+    class CountingAdapter(FakeAdapter):
+        media_reads = 0
+        audio_reads = 0
         async def read_media(self):
             self.media_reads += 1
-            if self.media_reads > 1:
-                raise RuntimeError("transient media failure")
             return await super().read_media()
+        def read_audio(self):
+            self.audio_reads += 1
+            return super().read_audio()
 
-    adapter = MediaOnlyFailure()
-    factory_calls = 0
-
-    def factory():
-        nonlocal factory_calls
-        factory_calls += 1
-        return adapter
-
-    service = MediaService(factory)
+    adapter = CountingAdapter()
+    service = MediaService(lambda: adapter)
     service.start()
     try:
-        threading.Event().wait(2.0)
-        state = service.snapshot()
-        assert factory_calls == 1
-        assert adapter.closed is False
-        assert state.volume == 37
-        assert state.title == "Song"
-        assert state.error == "媒体: 读取状态失败"
+        service.request_refresh({"devices", "audio", "media"}).result(timeout=1)
+        reads = adapter.media_reads, adapter.audio_reads
+        threading.Event().wait(0.7)
+        assert (adapter.media_reads, adapter.audio_reads) == reads
+        adapter.notify()
+        for _ in range(20):
+            if (adapter.media_reads, adapter.audio_reads) != reads:
+                break
+            threading.Event().wait(0.02)
+        assert adapter.media_reads == reads[0] + 1
+        assert adapter.audio_reads == reads[1] + 1
     finally:
+        service.stop()
+
+
+def test_refresh_waiter_completes_before_artwork_and_same_generation_reads_once() -> None:
+    gate = threading.Event()
+    started = threading.Event()
+
+    class SlowArtwork(FakeAdapter):
+        artwork_reads = 0
+        async def read_artwork(self):
+            self.artwork_reads += 1
+            started.set()
+            await asyncio.to_thread(gate.wait)
+            return b"cover", "image/png"
+
+    adapter = SlowArtwork()
+    service = MediaService(lambda: adapter)
+    service.start()
+    try:
+        state = service.request_refresh({"devices", "audio", "media", "artwork"}).result(timeout=1)
+        assert state.title == "Song"
+        assert started.wait(1)
+        adapter.notify(); adapter.notify()
+        threading.Event().wait(0.1)
+        assert adapter.artwork_reads == 1
+    finally:
+        gate.set()
+        service.stop()
+
+
+def test_old_artwork_cannot_overwrite_new_media() -> None:
+    first_gate = threading.Event()
+
+    class SwitchingArtwork(FakeAdapter):
+        artwork_reads = 0
+        async def read_artwork(self):
+            self.artwork_reads += 1
+            if self.artwork_reads == 1:
+                try:
+                    await asyncio.to_thread(first_gate.wait)
+                except asyncio.CancelledError:
+                    pass
+                return b"old", "image/png"
+            return b"new", "image/png"
+
+    adapter = SwitchingArtwork()
+    service = MediaService(lambda: adapter)
+    service.start()
+    try:
+        service.request_refresh({"media", "artwork"}).result(timeout=1)
+        adapter.media = _MediaReading(True, "Song B", "Artist", "playing", source_app_user_model_id="player")
+        adapter.notify()
+        first_gate.set()
+        for _ in range(50):
+            state = service.snapshot()
+            if state.cover is not None:
+                break
+            threading.Event().wait(0.02)
+        assert state.title == "Song B"
+        assert service.get_cover(state.cover.rsplit("/", 1)[1]) == (b"new", "image/png")
+    finally:
+        first_gate.set()
         service.stop()
 
 
@@ -352,6 +397,7 @@ def test_windows_adapter_balances_com_on_media_thread(monkeypatch) -> None:
 
     monkeypatch.setattr(media_service_module, "_PolicyConfig", Policy)
     adapter = _WindowsPlatformAdapter()
+    monkeypatch.setattr(adapter, "_bind_audio_callbacks", lambda: None)
 
     def run() -> None:
         async def lifecycle() -> None:
@@ -457,7 +503,7 @@ def test_s02_selected_paused_session_is_kept_without_playing_candidate(monkeypat
     spotify = _FakeGsmSession("spotify", 1)
     adapter = _multi_session_adapter(monkeypatch, [browser, spotify], browser)
     spotify.status = 2
-    spotify.fire()
+    asyncio.run(adapter.read_media())
     assert adapter._session_key == "spotify"
 
 
@@ -466,9 +512,9 @@ def test_s03_new_playing_session_replaces_selected_paused_session(monkeypatch) -
     spotify = _FakeGsmSession("spotify", 1)
     adapter = _multi_session_adapter(monkeypatch, [browser, spotify], browser)
     spotify.status = 2
-    spotify.fire()
+    asyncio.run(adapter.read_media())
     browser.status = 1
-    browser.fire()
+    asyncio.run(adapter.read_media())
     assert adapter._session_key == "browser"
 
 
@@ -482,7 +528,7 @@ def test_s04_multiple_playing_sessions_are_stable_then_switch_deterministically(
     adapter._sync_sessions(force_rebind=True)
     assert adapter._session_key == "spotify"
     adapter._manager.sessions.remove(spotify)
-    adapter._on_manager_changed()
+    asyncio.run(adapter.read_media())
     assert adapter._session_key == "alpha"
 
 
@@ -529,15 +575,18 @@ def test_read_media_uses_fresh_manager_snapshot_when_subscribed_manager_is_stale
     assert (reading.title, reading.playback) == ("spotify", "playing")
 
 
-def test_playback_event_state_survives_stale_manager_poll(monkeypatch) -> None:
+def test_callbacks_only_notify_until_media_thread_reads(monkeypatch) -> None:
     browser = _FakeGsmSession("browser", 2)
     spotify = _FakeGsmSession("spotify", 1)
     adapter = _multi_session_adapter(monkeypatch, [browser, spotify], browser)
+    calls = []
+    adapter._notify = lambda: calls.append("dirty")
     event_spotify = _FakeGsmSession("spotify", 2)
     adapter._on_session_changed(event_spotify)
-    reading = asyncio.run(adapter.read_media())
+    assert calls == ["dirty"]
     assert adapter._session_key == "spotify"
-    assert (reading.title, reading.playback) == ("spotify", "paused")
+    reading = asyncio.run(adapter.read_media())
+    assert (reading.title, reading.playback) == ("spotify", "playing")
 
 
 def test_artwork_diagnostic_reads_current_properties_reference(monkeypatch) -> None:
@@ -589,6 +638,8 @@ def test_s06_candidate_rebind_and_close_remove_every_event_handle(monkeypatch) -
     manager.sessions = [replacement_browser, spotify]
     manager.current = replacement_browser
     adapter._on_manager_changed()
+    assert len(first_browser.removed) == 0
+    adapter._sync_sessions(force_rebind=True)
     assert len(first_browser.removed) == 2
     assert len(spotify.removed) == 2
     asyncio.run(adapter.close())
@@ -747,3 +798,101 @@ def test_policy_config_close_releases_interface_once() -> None:
     wrapper.close()
     assert released == [owner_thread]
     assert wrapper._interface is None
+
+def test_volume_callback_registers_and_unregisters_same_interface_pointer(monkeypatch, caplog) -> None:
+    from pycaw.api.endpointvolume import IAudioEndpointVolumeCallback
+    from pycaw.utils import AudioUtilities
+
+    registered: list[object] = []
+    unregistered: list[object] = []
+    renders = [SimpleNamespace(GetId=lambda: "old"), SimpleNamespace(GetId=lambda: "new")]
+
+    class VolumeInterface:
+        def __init__(self, fail_unregister: bool = False) -> None:
+            self.fail_unregister = fail_unregister
+        def RegisterControlChangeNotify(self, callback) -> None:
+            registered.append(callback)
+        def UnregisterControlChangeNotify(self, callback) -> None:
+            unregistered.append(callback)
+            if self.fail_unregister:
+                raise ctypes.ArgumentError("argument 1: TypeError: expected LP_IAudioEndpointVolumeCallback instance")
+
+    old_volume = VolumeInterface(fail_unregister=True)
+    new_volume = VolumeInterface()
+    volumes = {"old": old_volume, "new": new_volume}
+
+    class Enumerator:
+        def RegisterEndpointNotificationCallback(self, _callback) -> None: pass
+        def GetDefaultAudioEndpoint(self, _flow, _role): return renders[0]
+
+    monkeypatch.setattr(AudioUtilities, "GetDeviceEnumerator", staticmethod(Enumerator))
+    monkeypatch.setattr(AudioUtilities, "CreateDevice", staticmethod(lambda render: SimpleNamespace(EndpointVolume=volumes[render.GetId()])))
+    notifications: list[set[str]] = []
+    adapter = _WindowsPlatformAdapter()
+    adapter._notify = notifications.append
+    adapter._bind_audio_callbacks()
+    callback_object = adapter._volume_callback
+    callback_pointer = adapter._volume_callback_interface
+
+    assert callback_object is not None
+    assert callback_pointer is not None
+    assert callback_object.QueryInterface(IAudioEndpointVolumeCallback) == callback_pointer
+    assert registered == [callback_pointer]
+
+    adapter._rebind_volume_callback(renders[1])
+    assert registered == [callback_pointer, callback_pointer]
+    assert unregistered == [callback_pointer]
+    assert adapter._volume_interface is new_volume
+    assert adapter._volume_endpoint_id == "new"
+    assert "endpoint_id=old" in caplog.text
+
+    callback_object.on_notify(0.5, 0, None, 2, [0.5, 0.5])
+    assert notifications == [{"audio"}]
+
+
+def test_volume_callback_notify_marks_only_audio_dirty_and_publishes_volume_revision() -> None:
+    class CallbackAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.audio_reads = 0
+            self.media_reads = 0
+        async def initialize(self, notify) -> None:
+            await super().initialize(notify)
+            class VolumeCallback:
+                def on_notify(inner_self, *_args) -> None:
+                    notify({"audio"})
+            self.volume_callback = VolumeCallback()
+        def read_audio(self):
+            self.audio_reads += 1
+            return super().read_audio()
+        async def read_media(self):
+            self.media_reads += 1
+            return await super().read_media()
+
+    adapter = CallbackAdapter()
+    service = MediaService(lambda: adapter)
+    observed: list = []
+    remove = service.add_listener(observed.append)
+    service.start()
+    try:
+        service.request_refresh({"devices", "audio", "media"}).result(timeout=1)
+        before = service.snapshot()
+        audio_reads = adapter.audio_reads
+        media_reads = adapter.media_reads
+        adapter.audio = _AudioReading(68, adapter.audio.render_devices, adapter.audio.capture_devices, adapter.audio.selected_render_id, adapter.audio.selected_capture_id)
+
+        adapter.volume_callback.on_notify(0.68, 0, None, 2, [0.68, 0.68])
+        for _ in range(50):
+            if service.snapshot().volume == 68:
+                break
+            threading.Event().wait(0.02)
+
+        after = service.snapshot()
+        assert after.volume == 68
+        assert after.revision > before.revision
+        assert adapter.audio_reads == audio_reads + 1
+        assert adapter.media_reads == media_reads
+        assert observed[-1] == after
+    finally:
+        remove()
+        service.stop()

@@ -45,6 +45,13 @@ class MediaConnectionController(
         loopJob = scope.launch { runConnectionLoop(generation, owner) }
     }
 
+    fun refresh() {
+        val generation = activeGeneration
+        val owner = ownerIdentity
+        if (!isCurrent(generation, owner)) return
+        scope.launch { applyRefresh(generation, owner) }
+    }
+
     override fun close() {
         invalidate()
     }
@@ -99,6 +106,7 @@ class MediaConnectionController(
                     }
                 },
                 onClosed = { reason -> termination.complete(reason) },
+                onOpen = { scope.launch { applyRefresh(generation, owner) } },
             )
             val reason = termination.await()
             eventConnection = null
@@ -118,6 +126,19 @@ class MediaConnectionController(
                 MediaEventTermination.Eof, is MediaEventTermination.NetworkError -> Unit
             }
             retryDelay(backoffMillis(retry++))
+        }
+    }
+
+    private suspend fun applyRefresh(generation: Long, owner: Any) {
+        when (val refreshed = apiClient.refreshMediaState()) {
+            is ApiResult.Success -> applyState(generation, owner, refreshed.value)
+            is ApiResult.HttpError -> if (refreshed.status == 401 || refreshed.status == 403) {
+                onMain(generation, owner) { onAuthInvalid() }
+            } else {
+                onMain(generation, owner) { onError(refreshed.message) }
+            }
+            is ApiResult.NetworkError -> onMain(generation, owner) { onError(refreshed.message) }
+            is ApiResult.ParseError -> onMain(generation, owner) { onError(refreshed.message) }
         }
     }
 

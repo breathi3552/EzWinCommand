@@ -4,3 +4,5 @@ psutil>=6.0.0
 pywin32>=306
 winrt-Windows.Media.Control[all]==3.2.1
 pycaw==20251023
+zeroconf>=0.136.0
+ifaddr>=0.2.0

@@ -40,69 +40,99 @@ h1 {
 #pc-pairing-area {
     background: #16213e;
     border-radius: 14px;
-    padding: 28px 20px;
+    padding: 20px;
     text-align: center;
     border: 1px solid #2a2a4a;
 }
 
-.pc-no-code {
+#pc-pairing-list {
+    display: grid;
+    gap: 14px;
+    margin-bottom: 16px;
+}
+
+.pairing-empty {
+    padding: 20px 12px;
+    color: #8888aa;
     font-size: 1rem;
-    color: #666;
-    margin-bottom: 20px;
 }
 
-.pc-generate-btn {
-    padding: 14px 36px;
-    font-size: 1.1rem;
-    font-weight: 600;
-    border: none;
+.pairing-card {
+    padding: 16px;
+    border: 1px solid #33466f;
     border-radius: 12px;
-    cursor: pointer;
-    background: linear-gradient(135deg, #0f3460, #1a5a9a);
+    background: #101c38;
+}
+
+.pairing-card--terminal {
+    background: #121a2f;
+    border-color: #2a3552;
+}
+
+.pairing-header,
+.pairing-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.pairing-device-name {
+    min-width: 0;
+    overflow: hidden;
     color: #fff;
-    letter-spacing: 0.1em;
-    transition: background 0.2s, transform 0.1s;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.pc-generate-btn:hover {
-    background: linear-gradient(135deg, #1a4a8a, #2670b0);
-}
-
-.pc-generate-btn:active {
-    transform: scale(0.97);
-}
-
-.pc-generate-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-}
-
-/* 配对码大号显示 */
-#pc-pairing-code {
+.pairing-id {
+    flex: none;
+    color: #7f91b8;
     font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
-    font-size: 56px;
-    font-weight: 700;
-    letter-spacing: 12px;
-    color: #4fc3f7;
-    background: #0d1b3e;
-    border-radius: 14px;
-    padding: 16px 24px;
-    user-select: all;
-    cursor: pointer;
+    font-size: 0.78rem;
+}
+
+.pairing-code {
+    margin: 14px 0;
+    padding: 12px 16px;
     border: 2px solid #4fc3f7;
+    border-radius: 12px;
+    background: #0d1b3e;
+    color: #4fc3f7;
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 52px;
+    font-weight: 700;
+    letter-spacing: 10px;
+    line-height: 1.1;
+    text-indent: 10px;
     text-shadow: 0 0 20px rgba(79, 195, 247, 0.4);
-    display: inline-block;
-    margin-bottom: 16px;
+    user-select: all;
 }
 
-/* 倒计时 */
-#pc-countdown {
-    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
-    font-size: 1.4rem;
+.pairing-meta {
+    color: #a8b5cf;
+    font-size: 0.88rem;
+}
+
+.pairing-countdown {
     color: #ffb74d;
-    margin-bottom: 16px;
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
     font-weight: 600;
+}
+
+.pairing-status {
+    color: #9bb1d9;
+}
+
+.pairing-status--locked {
+    color: #ff8a80;
+    font-weight: 600;
+}
+
+.pairing-card--terminal .pairing-meta {
+    justify-content: flex-end;
+    margin-top: 12px;
 }
 
 /* 刷新按钮 */
@@ -260,88 +290,7 @@ h1 {
     50% { opacity: 1; }
 }
 
-/* ---- 配对页（复用并扩展原有样式） ---- */
 
-#ext-pairing {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 28px;
-    padding-top: 40px;
-}
-
-#pairing-instructions {
-    text-align: center;
-    max-width: 320px;
-}
-
-.pairing-hint {
-    font-size: 0.8rem;
-    color: #666;
-    margin-top: 10px;
-}
-
-#code-input-area {
-    text-align: center;
-    width: 100%;
-    max-width: 320px;
-}
-
-#code-inputs {
-    display: flex;
-    justify-content: center;
-    gap: 12px;
-    margin-bottom: 20px;
-}
-
-.code-cell {
-    width: 56px;
-    height: 64px;
-    font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
-    font-size: 32px;
-    text-align: center;
-    background: #0d1b3e;
-    border: 2px solid #334;
-    border-radius: 12px;
-    color: #e0e0e0;
-    outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.code-cell:focus {
-    border-color: #4fc3f7;
-    box-shadow: 0 0 12px rgba(79, 195, 247, 0.3);
-}
-
-#pair-btn {
-    width: 100%;
-    padding: 16px;
-    font-size: 1.2rem;
-    font-weight: 600;
-    border: none;
-    border-radius: 12px;
-    cursor: pointer;
-    background: linear-gradient(135deg, #0f3460, #1a5a9a);
-    color: #fff;
-    letter-spacing: 0.3em;
-    transition: background 0.2s, transform 0.1s;
-}
-
-#pair-btn:hover {
-    background: linear-gradient(135deg, #1a4a8a, #2670b0);
-}
-
-#pair-btn:active {
-    transform: scale(0.97);
-}
-
-#pair-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-}
-
-#pair-error,
 .ui-error {
     color: #ff6b6b;
     font-size: 0.85rem;
@@ -540,21 +489,12 @@ button:active {
    ============================================================ */
 
 @media (max-width: 360px) {
-    #pc-pairing-code {
+    .pairing-code {
         font-size: 40px;
         letter-spacing: 8px;
-        padding: 12px 16px;
+        text-indent: 8px;
     }
 
-    .code-cell {
-        width: 48px;
-        height: 56px;
-        font-size: 28px;
-    }
-
-    #code-inputs {
-        gap: 8px;
-    }
 
     #pc-device-table th,
     #pc-device-table td,

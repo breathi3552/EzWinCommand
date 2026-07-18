@@ -62,44 +62,37 @@ class _StubDispatcher:
 
 class _StubAuthManager:
     def __init__(self) -> None:
-        self._pairing_code = "a1b2"
-        self._expired = False
-        self._devices = []
+        self._pairing = {"pairing_id": "pair-1", "server_id": "server-1", "code": "1234"}
+        self.authorized_keys: set[str] = set()
         self._device_key = "device-abc123"
-
-    def get_pairing_code(self):
-        return self._pairing_code if not self._expired else None
-
-    def get_pairing_code_expires_in(self) -> int:
-        return 123
-
-    def has_devices(self) -> bool:
-        return bool(self._devices)
-
-    def try_pair(self, token: str, name: str):
-        return self._device_key if token == self._pairing_code else None
-
-    def list_devices(self) -> list[dict]:
-        return [{"key": self._device_key, "name": "Android Phone"}]
-
-    def remove_device(self, key: str) -> bool:
-        return key == self._device_key
-
-    def rename_device(self, key: str, name: str) -> bool:
-        return key == self._device_key
-
-    def is_authorized(self, key: str) -> bool:
-        return key == self._device_key
-
-    def touch(self, key: str) -> None:
-        return None
+    def create_pairing(self, device_name="Android"):
+        return {"pairing_id": "pair-1", "server_id": "server-1", "expires_in": 300}
+    def list_pairings(self, include_code=False):
+        row = {"pairing_id":"pair-1", "server_id":"server-1", "device_name":"Android", "status":"pending", "expires_in":300, "lock_expires_in":0}
+        if include_code: row["code"] = "1234"
+        return [row]
+    def complete_pairing(self, server_id, pairing_id, code, device_name):
+        if (server_id, pairing_id, code) != ("server-1", "pair-1", "1234"):
+            return None
+        self.authorized_keys.add(self._device_key)
+        return self._device_key
+    def cancel_pairing(self, pairing_id): return pairing_id == "pair-1"
+    def list_devices(self): return [{"key": self._device_key, "name": "Android Phone"}]
+    def remove_device(self, key): return key == self._device_key
+    def rename_device(self, key, name): return key == self._device_key
+    def is_authorized(self, key): return key in self.authorized_keys
+    def touch(self, key): return None
 
 
 
 def _make_client() -> TestClient:
     app = create_app()
     app.state.dispatcher = _StubDispatcher()
-    app.state.auth_manager = _StubAuthManager()
+    auth_middleware = next(middleware for middleware in app.user_middleware if middleware.cls.__name__ == "_AuthMiddleware")
+    auth_manager = auth_middleware.cls.__call__.__closure__[0].cell_contents
+    auth_manager.__class__ = _StubAuthManager
+    _StubAuthManager.__init__(auth_manager)
+    app.state.auth_manager = auth_manager
     return TestClient(app)
 
 
@@ -125,50 +118,104 @@ def test_android_lan_ping_public() -> None:
 
 
 
-def test_android_lan_pairing_code_hides_code_for_remote_client() -> None:
+
+def test_remote_pairing_full_flow_and_strict_anonymous_boundary() -> None:
+    client = _make_client()
+    identity = _remote_request(client, "GET", "/api/identity")
+    assert identity.status_code == 200
+    assert {"server_id", "protocol_version", "display_name", "port"} <= identity.json().keys()
+
+    created = _remote_request(client, "POST", "/api/pairings", json={"device_name": "Android Phone"})
+    assert created.status_code == 201
+    assert created.json()["pairing_id"] == "pair-1"
+
+    wrong_code = _remote_request(client, "POST", "/api/pairings/pair-1/complete", json={
+        "server_id": "server-1", "pairing_id": "pair-1", "code": "0000", "device_name": "Android Phone",
+    })
+    assert wrong_code.status_code == 403
+
+    completed = _remote_request(client, "POST", "/api/pairings/pair-1/complete", json={
+        "server_id": "server-1", "pairing_id": "pair-1", "code": "1234", "device_name": "Android Phone",
+    })
+    assert completed.status_code == 201
+    device_key = completed.json()["device_key"]
+    assert device_key == "device-abc123"
+
+    actions = _remote_request(client, "GET", "/api/actions", headers={"Authorization": f"Bearer {device_key}"})
+    assert actions.status_code == 200
+
+    cancelled = _remote_request(client, "DELETE", "/api/pairings/pair-1")
+    assert cancelled.status_code == 204
+
+    for method, path in (
+        ("GET", "/api/pairings/pair-1"),
+        ("GET", "/api/pairings/pair-1/complete"),
+        ("POST", "/api/pairings/pair-1/complete/extra"),
+        ("DELETE", "/api/pairings/pair-1/extra"),
+        ("PATCH", "/api/pairings/pair-1"),
+    ):
+        response = _remote_request(client, method, path)
+        assert response.status_code == 401, (method, path, response.text)
+
+
+def test_device_list_allows_loopback_and_requires_remote_bearer() -> None:
     client = _make_client()
 
-    response = _remote_request(client, "GET", "/api/pairing-code")
+    local = client.get("/api/devices")
+    assert local.status_code == 200
+    assert local.json() == {"devices": [{"key": "device-abc123", "name": "Android Phone"}]}
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload == {"has_code": True, "has_devices": False, "expires_in": 123}
-    assert "code" not in payload
+    unauthorized = _remote_request(client, "GET", "/api/devices")
+    assert unauthorized.status_code == 401
+
+def test_local_pairings_code_and_remote_not_found() -> None:
+    client = _make_client()
+    local = client.get("/api/local/pairings")
+    assert local.status_code == 200 and local.json()["pairings"][0]["code"] == "1234"
+    remote = _remote_request(client, "GET", "/api/local/pairings")
+    assert remote.status_code == 404
 
 
 
-def test_android_lan_authorize_returns_device_key() -> None:
+def test_web_shell_revalidates_and_references_versioned_assets() -> None:
     client = _make_client()
 
-    response = client.post("/api/authorize", json={"token": "a1b2", "name": "Android Phone"})
+    home = client.get("/")
+    index = client.get("/index.html")
 
-    assert response.status_code == 201
-    payload = response.json()
-    assert payload["success"] is True
-    assert payload["device_key"] == "device-abc123"
+    assert home.headers["cache-control"] == "no-cache, must-revalidate"
+    assert index.headers["cache-control"] == "no-cache, must-revalidate"
+    assert '/static/app.js?v=20260717' in home.text
+    assert '/static/style.css?v=20260717' in home.text
+
+    script = client.get("/static/app.js")
+    versioned_script = client.get("/static/app.js?v=20260717")
+    assert script.status_code == 200
+    assert versioned_script.status_code == 200
+    assert versioned_script.content == script.content
+    assert "no-store" not in script.headers.get("cache-control", "")
 
 
-
-def test_android_lan_protected_api_requires_bearer() -> None:
+def test_pc_page_polls_local_pairings_without_remote_code_logic() -> None:
     client = _make_client()
+    page = client.get("/").text
+    script = client.get("/static/app.js").text
 
-    response = _remote_request(client, "GET", "/api/actions")
-
-    assert response.status_code == 401
-    assert response.json()["detail"]
-
-
-
-def test_android_lan_actions_accepts_valid_bearer() -> None:
-    client = _make_client()
-
-    response = client.get("/api/actions", headers={"Authorization": "Bearer device-abc123"})
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert isinstance(payload["actions"], list)
-    assert payload["actions"][0]["name"] == "media.play_pause"
-
+    assert 'id="pc-pairing-area"' in page
+    assert 'fetchJson("/api/local/pairings"' in script
+    assert "pcStartPolling();" in script
+    assert "PC_CODE_POLL_MS = 1000" in script
+    assert "has_code" not in script
+    assert 'fetchJson("/api/devices")' in script
+    assert 'fetchJson("/api/devices", {}, "pc-error")' not in script
+    style = client.get("/static/style.css").text
+    assert "pairing-empty" in script and "等待手机发起配对" in script
+    assert "pairing-card" in script and "pairing-device-name" in script
+    assert "pcPairingShortId(pairing.pairing_id)" in script
+    assert 'active && /^\\d{4}$/.test(code)' in script
+    assert "pairing-code" in style and "font-size: 52px" in style
+    assert 'id="ext-pairing"' not in page
+    assert "#pc-pairing-code" not in style and "#pc-countdown" not in style
 
 
 def test_android_lan_command_accepts_valid_bearer() -> None:

@@ -2,22 +2,24 @@ package io.github.ezwincommand.android.network
 
 import io.github.ezwincommand.android.AppConstants
 import io.github.ezwincommand.android.model.ActionPlugin
-import io.github.ezwincommand.android.model.AuthorizeResult
+import io.github.ezwincommand.android.model.AudioEndpoint
 import io.github.ezwincommand.android.model.CommandResult
 import io.github.ezwincommand.android.model.CommandStatus
 import io.github.ezwincommand.android.model.DeviceInfo
-import io.github.ezwincommand.android.model.AudioEndpoint
 import io.github.ezwincommand.android.model.MediaPlayback
 import io.github.ezwincommand.android.model.MediaState
-import io.github.ezwincommand.android.model.PairingStatus
+import io.github.ezwincommand.android.model.PairingCancelled
+import io.github.ezwincommand.android.model.PairingCompleted
+import io.github.ezwincommand.android.model.PairingCreated
 import io.github.ezwincommand.android.model.PingResponse
+import io.github.ezwincommand.android.model.ServerIdentity
 import io.github.ezwincommand.android.model.SubAction
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
@@ -25,6 +27,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -72,36 +75,35 @@ open class EzApiClient(
         parser = { body -> PingResponse(status = body.optString("status", "")) },
     )
 
-    open suspend fun pairingStatus(): ApiResult<PairingStatus> = request(
-        method = "GET",
-        path = "/api/pairing-code",
-        authenticated = false,
+    open suspend fun identity(): ApiResult<ServerIdentity> = request(
+        method = "GET", path = "/api/identity", authenticated = false,
         parser = { body ->
-            PairingStatus(
-                hasCode = body.optBoolean("has_code", false),
-                hasDevices = body.optBoolean("has_devices", false),
-                expiresIn = body.optInt("expires_in", 0),
-            )
+            val version = body.requiredInt("protocol_version")
+            require(version == 1) { "不支持的 identity 版本" }
+            val id = body.requiredString("server_id")
+            val uuid = UUID.fromString(id)
+            require(uuid.version() == 4 && uuid.toString() == id.lowercase()) { "server_id 非法" }
+            ServerIdentity(version, id.lowercase(), body.requiredString("display_name"))
         },
     )
 
-    open suspend fun authorize(token: String, name: String): ApiResult<AuthorizeResult> = request(
-        method = "POST",
-        path = "/api/authorize",
-        authenticated = false,
-        body = JSONObject()
-            .put("token", token)
-            .put("name", name),
-        successCodes = setOf(201),
-        parser = { body ->
-            AuthorizeResult(
-                success = body.optBoolean("success", false),
-                deviceKey = body.optStringOrNull("device_key"),
-                message = body.optStringOrNull("message"),
-            )
-        },
+    open suspend fun createPairing(serverId: String, deviceName: String): ApiResult<PairingCreated> = request(
+        method = "POST", path = "/api/pairings", authenticated = false,
+        body = JSONObject().put("server_id", serverId).put("device_name", deviceName), successCodes = setOf(201),
+        parser = { PairingCreated(it.requiredString("pairing_id"), it.requiredInt("expires_in")) },
     )
 
+    open suspend fun completePairing(serverId: String, pairingId: String, code: String, deviceName: String = "Android"): ApiResult<PairingCompleted> {
+        require(code.matches(Regex("[0-9]{4}"))) { "验证码必须是 4 位数字" }
+        return request(method = "POST", path = "/api/pairings/${encodePathSegment(pairingId)}/complete", authenticated = false,
+            body = JSONObject().put("server_id", serverId).put("pairing_id", pairingId).put("code", code).put("device_name", deviceName), successCodes = setOf(201),
+            parser = { PairingCompleted(it.requiredString("device_key")) })
+    }
+
+    open suspend fun cancelPairing(pairingId: String): ApiResult<PairingCancelled> = request(
+        method = "DELETE", path = "/api/pairings/${encodePathSegment(pairingId)}", authenticated = false,
+        successCodes = setOf(200, 204), parser = { PairingCancelled(it.optBoolean("cancelled", true)) },
+    )
     open suspend fun listActions(): ApiResult<List<ActionPlugin>> = request(
         method = "GET",
         path = "/api/actions",
@@ -172,6 +174,13 @@ open class EzApiClient(
         parser = ::parseMediaState,
     )
 
+    open suspend fun refreshMediaState(): ApiResult<MediaState> = request(
+        method = "POST",
+        path = "/api/media/refresh",
+        authenticated = true,
+        parser = ::parseMediaState,
+    )
+
     open suspend fun getMediaCover(path: String): ApiResult<ByteArray> = withContext(Dispatchers.IO) {
         val connection = try {
             openConnection(path).apply {
@@ -211,6 +220,7 @@ open class EzApiClient(
         since: Long,
         onEvent: (MediaState) -> Unit,
         onClosed: (MediaEventTermination) -> Unit,
+        onOpen: () -> Unit = {},
     ): Closeable {
         require(!closed.get()) { "EzApiClient 已关闭" }
         require(since >= 0) { "since 不能为负数" }
@@ -235,7 +245,7 @@ open class EzApiClient(
                     setBearer()
                 }
                 connectionRef.set(connection)
-                if (callerClosed.get()) return@launch
+                if (callerClosed.get()) return@launch 
                 val status = connection.responseCode
                 if (status !in 200..299) {
                     val raw = connection.errorStream?.readTextUtf8().orEmpty()
@@ -244,6 +254,7 @@ open class EzApiClient(
                     terminate(MediaEventTermination.HttpError(status, message))
                     return@launch
                 }
+                onOpen()
                 connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                     var event: String? = null
                     var eventId: Long? = null
@@ -329,7 +340,8 @@ open class EzApiClient(
             val responseJson = responseText.toJsonObjectOrNull()
 
             if (code !in successCodes) {
-                val message = responseJson?.optString("message", responseText.ifBlank { connection.responseMessage }.ifBlank { "HTTP $code" })
+                val message = responseJson?.optString("message")?.takeIf { it.isNotBlank() }
+                    ?: responseJson?.optString("detail")?.takeIf { it.isNotBlank() }
                     ?: responseText.ifBlank { connection.responseMessage }.ifBlank { "HTTP $code" }
                 return@withContext ApiResult.HttpError(code, message)
             }
@@ -495,6 +507,18 @@ open class EzApiClient(
             selectedCaptureId = nullableString("selected_capture_id"),
             error = nullableString("error"),
         )
+    }
+
+    private fun JSONObject.requiredString(name: String): String {
+        val value = opt(name)
+        require(value is String && value.isNotEmpty()) { "缺少或非法 $name" }
+        return value
+    }
+
+    private fun JSONObject.requiredInt(name: String): Int {
+        val value = opt(name)
+        require(value is Number && value.toDouble() == value.toInt().toDouble()) { "缺少或非法 $name" }
+        return value.toInt()
     }
 
     private fun JSONObject.optStringOrNull(name: String): String? = if (has(name) && !isNull(name)) optString(name) else null

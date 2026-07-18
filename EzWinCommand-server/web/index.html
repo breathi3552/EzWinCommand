@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EzWinCommand</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=20260717">
     <link rel="icon" href="/static/favicon.ico" sizes="any">
 </head>
 <body>
@@ -13,19 +13,10 @@
     <div id="pc-panel" style="display:none">
         <h1>EzWinCommand 管理面板</h1>
 
-        <!-- 配对码区 -->
+        <!-- 当前配对请求与验证码仅在本机显示 -->
         <section id="pc-pairing-area">
-            <!-- 无配对码 -->
-            <div id="pc-pairing-empty">
-                <p class="pc-no-code">暂无配对码</p>
-                <button id="pc-generate-btn" class="pc-generate-btn">生成配对码</button>
-            </div>
-            <!-- 有配对码 -->
-            <div id="pc-pairing-active" style="display:none">
-                <div id="pc-pairing-code"></div>
-                <div id="pc-countdown">05:00</div>
-                <button id="pc-refresh-btn" class="pc-refresh-btn">刷新</button>
-            </div>
+            <div id="pc-pairing-list"></div>
+            <button id="pc-refresh-btn" class="pc-refresh-btn">刷新</button>
         </section>
 
         <!-- 设备管理区 -->
@@ -60,27 +51,6 @@
             <p class="ext-waiting">等待 PC 端生成配对码…</p>
         </div>
 
-        <!-- 配对页（有配对码时） -->
-        <div id="ext-pairing" style="display:none">
-            <h1>EzWinCommand</h1>
-
-            <div id="pairing-instructions">
-                <p class="pairing-label">输入 PC 端显示的配对码</p>
-                <p class="pairing-hint">配对码只会显示在 localhost 管理面板上。</p>
-            </div>
-
-            <div id="code-input-area">
-                <p class="pairing-label">输入配对码</p>
-                <div id="code-inputs">
-                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
-                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
-                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
-                    <input type="text" class="code-cell" maxlength="1" autocomplete="off" inputmode="text">
-                </div>
-                <button id="pair-btn">配 对</button>
-                <p id="pair-error"></p>
-            </div>
-        </div>
 
         <!-- 外部控制面板（配对后） -->
         <div id="ext-dashboard" style="display:none">
@@ -106,6 +76,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260717"></script>
 </body>
 </html>

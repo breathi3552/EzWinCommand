@@ -58,17 +58,25 @@ data class PingResponse(
     val status: String,
 )
 
-data class PairingStatus(
-    val hasCode: Boolean,
-    val hasDevices: Boolean,
+data class ServerIdentity(
+    val version: Int,
+    val serverId: String,
+    val name: String,
+)
+
+data class PairingCreated(
+    val pairingId: String,
     val expiresIn: Int,
 )
 
-data class AuthorizeResult(
-    val success: Boolean,
-    val deviceKey: String?,
-    val message: String?,
+data class PairingCompleted(
+    val deviceKey: String,
 )
+
+data class PairingCancelled(
+    val cancelled: Boolean,
+)
+
 
 data class ActionPlugin(
     val name: String,

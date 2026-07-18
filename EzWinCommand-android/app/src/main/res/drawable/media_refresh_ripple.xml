@@ -1,0 +1,3 @@
+<ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="@color/ezwin_border">
+    <item><shape><solid android:color="@android:color/transparent"/><corners android:radius="14dp"/></shape></item>
+</ripple>

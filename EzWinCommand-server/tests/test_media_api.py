@@ -47,6 +47,13 @@ class FakeMediaService(MediaService):
         future.set_result(CommandResult(True, "ok"))
         return future
 
+    def request_refresh(self, domains):
+        from concurrent.futures import Future
+        self.calls.append(("refresh", frozenset(domains)))
+        future = Future()
+        future.set_result(self.snapshot())
+        return future
+
 def test_hanging_media_service_lifespan_ping() -> None:
     import threading
     import time
@@ -165,6 +172,45 @@ def test_state_cover_and_command_validation() -> None:
         assert client.post("/api/command", json={"action": "media", "params": {"sub_action": "play_pause", "extra": 1}}).status_code == 422
 
 
+def test_refresh_returns_existing_media_state_and_503_when_unavailable() -> None:
+    service = FakeMediaService()
+    with TestClient(create_app(service)) as client:
+        response = client.post("/api/media/refresh")
+        assert response.status_code == 200
+        assert response.json()["revision"] == 4
+        assert service.calls[-1] == ("refresh", frozenset({"devices", "audio", "media", "artwork"}))
+
+        from concurrent.futures import Future
+        failed = Future()
+        failed.set_exception(RuntimeError("internal"))
+        service.request_refresh = lambda _domains: failed
+        unavailable = client.post("/api/media/refresh")
+        assert unavailable.status_code == 503
+        assert unavailable.json() == {"detail": "媒体服务不可用"}
+
+
+def test_sse_subscribe_registers_before_snapshot() -> None:
+    service = FakeMediaService()
+    with TestClient(create_app(service)) as client:
+        hub = client.app.state.media_event_hub
+        original_snapshot = service.snapshot
+
+        def snapshot_after_publish():
+            state = original_snapshot()
+            if state.revision == 4:
+                service._state = replace(state, revision=5, volume=38)
+                hub._accept(service._state)
+            return service._state
+
+        service.snapshot = snapshot_after_publish
+        queue, initial = hub._subscribe(4, "device-a")
+        try:
+            assert [state.revision for state in initial] == [5]
+            assert queue in hub.subscribers
+        finally:
+            hub.subscribers.pop(queue, None)
+
+
 def test_slow_media_command_does_not_block_event_loop_ping() -> None:
     started = threading.Event()
     release = threading.Event()
@@ -239,9 +285,10 @@ def test_media_endpoints_reject_invalid_bearer_before_streaming() -> None:
     service = FakeMediaService()
     cover_url = service._cache_artwork(b"private", "image/png")
     with TestClient(create_app(service)) as client:
-        for path in ("/api/media/state", cover_url, "/api/media/events?since=4"):
-            missing = _remote_request(client, "GET", path)
-            invalid = _remote_request(client, "GET", path, headers={"Authorization": "Bearer invalid"})
+        for path in ("/api/media/state", "/api/media/refresh", cover_url, "/api/media/events?since=4"):
+            method = "POST" if path == "/api/media/refresh" else "GET"
+            missing = _remote_request(client, method, path)
+            invalid = _remote_request(client, method, path, headers={"Authorization": "Bearer invalid"})
             assert missing.status_code == invalid.status_code == 401
             assert missing.headers["content-type"].startswith("application/json")
             assert invalid.headers["content-type"].startswith("application/json")

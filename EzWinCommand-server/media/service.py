@@ -52,6 +52,7 @@ class _MediaReading:
     playback: Playback
     artwork: bytes | None = None
     artwork_mime: str | None = None
+    source_app_user_model_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +108,12 @@ class _WindowsPlatformAdapter:
         self._notify: Callable[[], None] = lambda: None
         self._com_initialized = False
         self._policy_config: _PolicyConfig | None = None
+        self._device_enumerator = None
+        self._device_callback = None
+        self._volume_callback = None
+        self._volume_interface = None
+        self._volume_callback_interface = None
+        self._volume_endpoint_id: str | None = None
 
     async def initialize(self, notify: Callable[[], None]) -> None:
         comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
@@ -122,9 +129,58 @@ class _WindowsPlatformAdapter:
             self._manager_tokens.append(("sessions_changed", sessions_token))
             self._sync_sessions(force_rebind=True)
             self._policy_config = _PolicyConfig()
+            self._bind_audio_callbacks()
         except BaseException:
             await self.close()
             raise
+
+    def _bind_audio_callbacks(self) -> None:
+        from pycaw.api.endpointvolume import IAudioEndpointVolumeCallback
+        from pycaw.callbacks import AudioEndpointVolumeCallback, MMNotificationClient
+        from pycaw.utils import AudioUtilities
+
+        notify = self._notify
+
+        class DeviceCallback(MMNotificationClient):
+            def on_default_device_changed(self, *_args): notify()
+            def on_device_added(self, *_args): notify()
+            def on_device_removed(self, *_args): notify()
+            def on_device_state_changed(self, *_args): notify()
+
+        class VolumeCallback(AudioEndpointVolumeCallback):
+            def on_notify(self, *_args): notify({"audio"})
+
+        self._device_enumerator = AudioUtilities.GetDeviceEnumerator()
+        self._device_callback = DeviceCallback()
+        self._volume_callback = VolumeCallback()
+        self._volume_callback_interface = self._volume_callback.QueryInterface(IAudioEndpointVolumeCallback)
+        self._device_enumerator.RegisterEndpointNotificationCallback(self._device_callback)
+        self._rebind_volume_callback()
+
+    def _rebind_volume_callback(self, render=None) -> None:
+        from pycaw.constants import EDataFlow, ERole
+        from pycaw.utils import AudioUtilities
+
+        if render is None:
+            enumerator = self._device_enumerator or AudioUtilities.GetDeviceEnumerator()
+            render = enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value)
+        endpoint_id = str(render.GetId())
+        if endpoint_id == self._volume_endpoint_id:
+            return
+        callback_interface = self._volume_callback_interface
+        if callback_interface is None:
+            return
+        volume_interface = AudioUtilities.CreateDevice(render).EndpointVolume
+        volume_interface.RegisterControlChangeNotify(callback_interface)
+        old_interface = self._volume_interface
+        old_endpoint_id = self._volume_endpoint_id
+        if old_interface is not None:
+            try:
+                old_interface.UnregisterControlChangeNotify(callback_interface)
+            except Exception:
+                logger.exception("注销旧默认输出音量回调失败: operation=rebind_audio_callback endpoint_id=%s", old_endpoint_id)
+        self._volume_interface = volume_interface
+        self._volume_endpoint_id = endpoint_id
 
     @staticmethod
     def _session_key_for(session) -> str | None:
@@ -134,25 +190,10 @@ class _WindowsPlatformAdapter:
         return source_id or None
 
     def _on_manager_changed(self, *_args) -> None:
-        try:
-            self._sync_sessions(force_rebind=True)
-        except Exception:
-            logger.exception("同步 GSMTC sessions 失败: operation=manager_event")
         self._notify()
 
     def _on_session_changed(self, sender, *_args) -> None:
-        try:
-            session_key = self._session_key_for(sender)
-            if session_key is not None:
-                self._event_sessions[session_key] = sender
-            binding = self._candidate_sessions.get(session_key) if session_key is not None else None
-            if binding is not None:
-                _session, event_owner, tokens = binding
-                self._candidate_sessions[session_key] = (sender, event_owner, tokens)
-            current_key = self._session_key_for(self._manager.get_current_session()) if self._manager is not None else None
-            self._select_session(current_key)
-        except Exception:
-            logger.exception("同步 GSMTC session 失败: operation=session_event")
+        # WinRT 回调线程不得读取或改写 GSMTC 对象；只唤醒 EzMediaLoop。
         self._notify()
 
     def _unbind_candidate(self, session_key: str) -> None:
@@ -274,6 +315,7 @@ class _WindowsPlatformAdapter:
             (props.title or None) if props is not None else None,
             (props.artist or None) if props is not None else None,
             playback,
+            source_app_user_model_id=session_key,
         )
 
     async def read_artwork(self) -> tuple[bytes | None, str | None]:
@@ -351,9 +393,10 @@ class _WindowsPlatformAdapter:
         from pycaw.constants import EDataFlow, ERole
         from pycaw.utils import AudioUtilities
 
-        enumerator = AudioUtilities.GetDeviceEnumerator()
+        enumerator = self._device_enumerator or AudioUtilities.GetDeviceEnumerator()
         render = enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value)
         capture = enumerator.GetDefaultAudioEndpoint(EDataFlow.eCapture.value, ERole.eMultimedia.value)
+        self._rebind_volume_callback(render)
         render_device = AudioUtilities.CreateDevice(render)
         volume = round(float(render_device.EndpointVolume.GetMasterVolumeLevelScalar()) * 100)
         return _AudioReading(
@@ -412,6 +455,23 @@ class _WindowsPlatformAdapter:
                     logger.exception("注销 GSMTC manager 事件失败: event=%s", event)
         self._manager_tokens.clear()
         self._manager = None
+        callback_interface = self._volume_callback_interface
+        if self._volume_interface is not None and callback_interface is not None:
+            try:
+                self._volume_interface.UnregisterControlChangeNotify(callback_interface)
+            except Exception:
+                logger.exception("注销默认输出音量回调失败: operation=close_audio_callback endpoint_id=%s", self._volume_endpoint_id)
+        self._volume_interface = None
+        self._volume_endpoint_id = None
+        if self._device_enumerator is not None and self._device_callback is not None:
+            try:
+                self._device_enumerator.UnregisterEndpointNotificationCallback(self._device_callback)
+            except Exception:
+                logger.exception("注销音频设备回调失败: operation=close_audio_callback")
+        self._volume_callback_interface = None
+        self._volume_callback = None
+        self._device_callback = None
+        self._device_enumerator = None
         if self._policy_config is not None:
             try:
                 self._policy_config.close()
@@ -436,7 +496,13 @@ class MediaService:
         self._covers: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
         self._cover_lock = threading.Lock()
         self._refresh_lock = asyncio.Lock()
-        self._artwork_diagnostic_task: asyncio.Task[None] | None = None
+        self._dirty: set[str] = set()
+        self._dirty_event: asyncio.Event | None = None
+        self._refresh_waiters: list[tuple[set[str], asyncio.Future[MediaState]]] = []
+        self._artwork_task: asyncio.Task[None] | None = None
+        self._media_identity: tuple[str | None, str | None, str | None] | None = None
+        self._media_generation = 0
+        self._artwork_generation_read: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._readiness_decision = threading.Event()
         self._media_ready = threading.Event()
@@ -462,6 +528,7 @@ class MediaService:
 
     async def _run(self) -> None:
         self._stop_requested = asyncio.Event()
+        self._dirty_event = asyncio.Event()
         if self._stop_signal.is_set():
             self._stop_requested.set()
         stop_task = asyncio.create_task(self._stop_requested.wait())
@@ -479,8 +546,6 @@ class MediaService:
                     await asyncio.gather(attempt, return_exceptions=True)
                     break
                 if attempt not in done:
-                    # 首次 deadline 只决定启动就绪状态；取消后的 adapter
-                    # 必须仍在媒体线程清理，再进入有界退避重试。
                     self._publish_error("媒体服务初始化超时")
                     self._readiness_decision.set()
                     first_attempt = False
@@ -497,13 +562,14 @@ class MediaService:
                 self._media_ready.set()
                 self._readiness_decision.set()
                 self._publish_error(None)
-                poll = asyncio.create_task(self._poll())
-                done, _ = await asyncio.wait({poll, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+                self._mark_dirty({"devices", "audio", "media", "artwork"})
+                worker = asyncio.create_task(self._dirty_worker())
+                done, _ = await asyncio.wait({worker, stop_task}, return_when=asyncio.FIRST_COMPLETED)
                 if stop_task in done:
-                    poll.cancel()
-                    await asyncio.gather(poll, return_exceptions=True)
+                    worker.cancel()
+                    await asyncio.gather(worker, return_exceptions=True)
                     break
-                await poll
+                await worker
                 self._media_ready.clear()
                 await self._close_adapter()
                 if await self._retry_sleep(stop_task):
@@ -511,6 +577,9 @@ class MediaService:
         finally:
             stop_task.cancel()
             await asyncio.gather(stop_task, return_exceptions=True)
+            if self._artwork_task is not None:
+                self._artwork_task.cancel()
+                await asyncio.gather(self._artwork_task, return_exceptions=True)
             self._media_ready.clear()
             await self._close_adapter()
 
@@ -554,111 +623,118 @@ class MediaService:
                     await adapter.close()
                 except Exception:
                     logger.exception("释放失败的媒体 adapter 失败")
-    async def _poll(self) -> None:
-        consecutive_failures = 0
-        while True:
-            media_ok, audio_ok = await self._refresh()
-            if media_ok or audio_ok:
-                consecutive_failures = 0
-            else:
-                consecutive_failures += 1
-                if consecutive_failures >= RUNTIME_FAILURE_THRESHOLD:
-                    logger.error(
-                        "媒体 adapter 连续读取失败，准备重建: operation=runtime_health failures=%d",
-                        consecutive_failures,
-                    )
-                    return
-            await asyncio.sleep(0.5)
 
-    def _schedule_refresh(self) -> None:
+    def _schedule_refresh(self, domains: set[str] | None = None) -> None:
         loop = self._loop
         if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(lambda: asyncio.create_task(self._refresh()))
+            loop.call_soon_threadsafe(self._mark_dirty, domains or {"devices", "audio", "media", "artwork"})
 
-    async def _refresh(self) -> tuple[bool, bool]:
+    def _mark_dirty(self, domains: set[str]) -> None:
+        self._dirty.update(domains)
+        if self._dirty_event is not None:
+            self._dirty_event.set()
+
+    async def _dirty_worker(self) -> None:
+        while True:
+            if not self._dirty:
+                assert self._dirty_event is not None
+                self._dirty_event.clear()
+                await self._dirty_event.wait()
+            domains = set(self._dirty)
+            self._dirty.difference_update(domains)
+            completed = await self._refresh(domains)
+            state = self.snapshot()
+            remaining = []
+            for requested, waiter in self._refresh_waiters:
+                if waiter.cancelled():
+                    continue
+                requested.difference_update(completed)
+                if requested:
+                    remaining.append((requested, waiter))
+                else:
+                    waiter.set_result(state)
+            self._refresh_waiters = remaining
+
+    async def _refresh(self, domains: set[str]) -> set[str]:
+        completed: set[str] = set()
         async with self._refresh_lock:
             adapter = self._adapter
             if adapter is None:
-                return False, False
-            audio = None
-            audio_error = None
-            try:
-                logger.info("媒体服务阶段开始: operation=read_audio")
-                audio = adapter.read_audio()
-            except Exception:
-                logger.exception("读取音频状态失败: operation=read_audio")
-                audio_error = "读取状态失败"
-            old = self.snapshot()
-            audio_candidate = replace(
-                old,
-                volume=audio.volume if audio is not None else old.volume,
-                render_devices=audio.render_devices if audio is not None else old.render_devices,
-                capture_devices=audio.capture_devices if audio is not None else old.capture_devices,
-                selected_render_id=audio.selected_render_id if audio is not None else old.selected_render_id,
-                selected_capture_id=audio.selected_capture_id if audio is not None else old.selected_capture_id,
-                error=f"音频: {audio_error}" if audio_error else None,
-            )
-            self._publish(audio_candidate)
-            logger.info(
-                "音频状态读取完成: operation=read_audio volume=%d render_devices=%d capture_devices=%d",
-                audio.volume if audio is not None else -1,
-                len(audio.render_devices) if audio is not None else 0,
-                len(audio.capture_devices) if audio is not None else 0,
-            )
+                return completed
+            if domains & {"devices", "audio"}:
+                try:
+                    audio = adapter.read_audio()
+                    old = self.snapshot()
+                    self._publish(replace(
+                        old,
+                        volume=audio.volume,
+                        render_devices=audio.render_devices,
+                        capture_devices=audio.capture_devices,
+                        selected_render_id=audio.selected_render_id,
+                        selected_capture_id=audio.selected_capture_id,
+                        error=None,
+                    ))
+                    completed.update(domains & {"devices", "audio"})
+                except Exception:
+                    logger.exception("读取音频状态失败: operation=refresh domains=devices,audio")
+                    self._publish(replace(self.snapshot(), error="音频: 读取状态失败"))
+            if "media" in domains:
+                try:
+                    media = await adapter.read_media()
+                    identity = (media.source_app_user_model_id, media.title, media.artist) if media.available else None
+                    old = self.snapshot()
+                    if identity != self._media_identity:
+                        self._media_identity = identity
+                        self._media_generation += 1
+                        self._artwork_generation_read = None
+                        if self._artwork_task is not None:
+                            self._artwork_task.cancel()
+                        cover = None
+                    else:
+                        cover = old.cover
+                    self._publish(replace(
+                        old,
+                        available=media.available,
+                        title=media.title,
+                        artist=media.artist,
+                        playback=media.playback,
+                        cover=cover,
+                        error=None,
+                    ))
+                    completed.add("media")
+                except Exception:
+                    logger.exception("读取媒体状态失败: operation=refresh domain=media")
+                    self._publish(replace(self.snapshot(), error="媒体: 读取状态失败"))
+            if "artwork" in domains:
+                self._start_artwork_read()
+                completed.add("artwork")
+        return completed
 
-            media = None
-            media_error = None
-            try:
-                logger.info("媒体服务阶段开始: operation=read_media")
-                media = await adapter.read_media()
-            except Exception:
-                logger.exception("读取媒体状态失败: operation=read_media")
-                media_error = "读取状态失败"
-            old = self.snapshot()
-            cover = self._cache_artwork(media.artwork, media.artwork_mime) if media is not None else old.cover
-            candidate = replace(
-                old,
-                available=media.available if media is not None else old.available,
-                title=media.title if media is not None else old.title,
-                artist=media.artist if media is not None else old.artist,
-                playback=media.playback if media is not None else old.playback,
-                cover=cover,
-                error=f"媒体: {media_error}" if media_error else old.error,
-            )
-            self._publish(candidate)
-            logger.info(
-                "媒体状态读取完成: operation=read_media available=%s title=%r playback=%s",
-                media.available if media is not None else False,
-                media.title if media is not None else None,
-                media.playback if media is not None else "none",
-            )
-            refresh_result = media is not None, audio is not None
-
-        self._start_artwork_diagnostic()
-        return refresh_result
-
-    def _start_artwork_diagnostic(self) -> None:
-        if self._artwork_diagnostic_task is not None:
+    def _start_artwork_read(self) -> None:
+        if self._media_identity is None or self._artwork_generation_read == self._media_generation:
             return
         adapter = self._adapter
         read_artwork = getattr(adapter, "read_artwork", None)
         if read_artwork is None:
             return
-        self._artwork_diagnostic_task = asyncio.create_task(self._diagnose_artwork(read_artwork))
+        generation = self._media_generation
+        identity = self._media_identity
+        self._artwork_generation_read = generation
+        self._artwork_task = asyncio.create_task(self._read_artwork(read_artwork, identity, generation))
 
-    async def _diagnose_artwork(self, read_artwork) -> None:
-        logger.info("媒体服务阶段开始: operation=diagnose_artwork")
+    async def _read_artwork(self, read_artwork, identity, generation: int) -> None:
         try:
             artwork, artwork_mime = await read_artwork()
-            artwork_cover = self._cache_artwork(artwork, artwork_mime)
-            if artwork_cover is not None:
-                self._publish(replace(self.snapshot(), cover=artwork_cover))
+            cover = self._cache_artwork(artwork, artwork_mime)
+            if cover is not None and generation == self._media_generation and identity == self._media_identity:
+                self._publish(replace(self.snapshot(), cover=cover))
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.exception("媒体封面诊断失败: operation=diagnose_artwork")
+            logger.exception("读取媒体封面失败: operation=read_artwork generation=%d", generation)
         finally:
-            current = asyncio.current_task()
-            if self._artwork_diagnostic_task is current:
-                self._artwork_diagnostic_task = None
+            if asyncio.current_task() is self._artwork_task:
+                self._artwork_task = None
 
     def _cache_artwork(self, data: bytes | None, mime: str | None) -> str | None:
         if data is None:
@@ -709,10 +785,34 @@ class MediaService:
             return CommandResult(False, "媒体服务不可用")
         try:
             result = await adapter.execute(sub_action, volume, endpoint_id)
+            if result.success:
+                domains = {"media"} if sub_action in {"play_pause", "prev", "next"} else {"devices", "audio"}
+                await self._request_refresh(domains)
+            return result
         except Exception:
             logger.exception("媒体命令执行失败: operation=%s", sub_action)
-            result = CommandResult(False, "媒体操作失败")
-        return result
+            return CommandResult(False, "媒体操作失败")
+
+    async def _request_refresh(self, domains: set[str]) -> MediaState:
+        if self._adapter is None:
+            raise RuntimeError("媒体服务不可用")
+        required = set(domains) & {"devices", "audio", "media"}
+        waiter = asyncio.get_running_loop().create_future()
+        if not required:
+            return self.snapshot()
+        self._refresh_waiters.append((required, waiter))
+        self._mark_dirty(set(domains))
+        return await waiter
+
+    def request_refresh(self, domains) -> Future[MediaState]:
+        loop = self._loop
+        requested = set(domains)
+        allowed = {"devices", "audio", "media", "artwork"}
+        if not requested or not requested <= allowed or loop is None or not loop.is_running() or not self._media_ready.is_set():
+            unavailable: Future[MediaState] = Future()
+            unavailable.set_exception(RuntimeError("媒体服务不可用"))
+            return unavailable
+        return asyncio.run_coroutine_threadsafe(self._request_refresh(requested), loop)
 
     def submit(self, sub_action: str, *, volume: int | None = None, endpoint_id: str | None = None) -> Future[CommandResult]:
         loop = self._loop

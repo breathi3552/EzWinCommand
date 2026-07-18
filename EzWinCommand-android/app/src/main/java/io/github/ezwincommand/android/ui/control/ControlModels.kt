@@ -41,6 +41,7 @@ fun interface ControlActionInvoker {
 sealed interface AndroidUiState {
     data object Main : AndroidUiState
     data class Control(
+        val serverId: String,
         val baseUrl: String,
         val controlState: ControlUiState = ControlUiState.Loading,
         val draft: MainDraft = MainDraft(),
@@ -57,6 +58,6 @@ data class MainDraft(
 
 sealed interface AndroidUiEffect {
     data class ShowMessage(val message: String) : AndroidUiEffect
-    data class OpenControl(val baseUrl: String) : AndroidUiEffect
+    data class OpenControl(val serverId: String, val baseUrl: String) : AndroidUiEffect
     data object ReturnToMain : AndroidUiEffect
 }

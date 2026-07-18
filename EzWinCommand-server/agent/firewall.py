@@ -11,6 +11,7 @@ import ctypes
 logger = logging.getLogger(__name__)
 
 RULE_NAME_PREFIX = "EzWinCommand"
+MDNS_RULE_NAME = "EzWinCommand mDNS 5353"
 
 
 def _rule_name(port: int) -> str:
@@ -86,11 +87,37 @@ def rule_exists(port: int) -> bool:
     return ok
 
 
-def add_rule(port: int) -> bool:
-    """添加或更新允许指定端口的入站 TCP 规则。成功返回 True。
+def _mdns_args(exists: bool) -> list[str]:
+    verb = ["set", "rule", f"name={MDNS_RULE_NAME}", "new"] if exists else ["add", "rule", f"name={MDNS_RULE_NAME}"]
+    return verb + [
+        "enable=yes", "dir=in", "action=allow", "protocol=udp", "localport=5353",
+        "profile=private", "remoteip=localsubnet",
+    ]
 
-    普通权限下 netsh 会失败；此时发起 UAC 提权执行同一条规则同步命令。
+
+def add_mdns_rule() -> bool:
+    """允许 Private 网络同子网设备向本进程 mDNS 端口发送查询。"""
+    exists, _ = _run_netsh(["show", "rule", f"name={MDNS_RULE_NAME}"])
+    args = _mdns_args(exists)
+    ok, output = _run_netsh(args)
+    if ok:
+        logger.info("已同步防火墙规则: %s", MDNS_RULE_NAME)
+        return True
+    logger.warning("同步 mDNS 防火墙规则失败: %s", output)
+    if _looks_like_elevation_error(output) and _request_elevated_netsh(args):
+        logger.warning("已请求管理员权限同步 mDNS 防火墙规则: %s", MDNS_RULE_NAME)
+    logger.warning(
+        "请以管理员身份运行本程序，或手动允许 Private/LocalSubnet UDP 5353 入站"
+    )
+    return False
+
+
+def add_rule(port: int) -> bool:
+    """添加或更新业务 TCP 与 mDNS 入站规则。成功返回 True。
+
+    普通权限下 netsh 会失败；此时分别发起 UAC 提权执行规则同步命令。
     """
+    mdns_ok = add_mdns_rule()
     rule_name = _rule_name(port)
     if rule_exists(port):
         operation = "同步"
@@ -103,7 +130,8 @@ def add_rule(port: int) -> bool:
             "action=allow",
             "protocol=tcp",
             f"localport={port}",
-            "profile=any",
+            "profile=private",
+            "remoteip=localsubnet",
         ]
     else:
         operation = "添加"
@@ -114,14 +142,15 @@ def add_rule(port: int) -> bool:
             "action=allow",
             "protocol=tcp",
             f"localport={port}",
-            "profile=any",
+            "profile=private",
+            "remoteip=localsubnet",
             "enable=yes",
         ]
 
     ok, output = _run_netsh(args)
     if ok:
         logger.info("已%s防火墙规则: %s (端口 %d)", operation, rule_name, port)
-        return True
+        return mdns_ok
 
     logger.warning("%s防火墙规则失败: %s", operation, output)
     if _looks_like_elevation_error(output):
@@ -136,7 +165,8 @@ def add_rule(port: int) -> bool:
     logger.warning(
         "请以管理员身份运行本程序，或手动执行：\n"
         "  netsh advfirewall firewall add rule name=\"%s\" "
-        "dir=in action=allow protocol=tcp localport=%d profile=any enable=yes",
+        "dir=in action=allow protocol=tcp localport=%d profile=private "
+        "remoteip=localsubnet enable=yes",
         rule_name, port,
     )
     return False

@@ -1,6 +1,7 @@
 package io.github.ezwincommand.android.ui.control
 
 import android.app.Dialog
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -11,20 +12,21 @@ import android.view.Gravity
 import android.view.ViewOutlineProvider
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.GridLayout
+import android.widget.FrameLayout
+import android.widget.PopupWindow
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Spinner
+import android.widget.RadioButton
 import android.widget.TextView
 import androidx.appcompat.widget.AppCompatImageButton
 import androidx.core.content.ContextCompat
 import androidx.core.view.setPadding
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import io.github.ezwincommand.android.R
 import io.github.ezwincommand.android.model.ActionPlugin
 import io.github.ezwincommand.android.model.AudioEndpoint
@@ -47,36 +49,57 @@ internal fun mediaButtonSpecs(available: Boolean, playback: MediaPlayback): List
 )
 
 
-class ControlScreen(context: Context) : ScrollView(context) {
-    private var devicesExpanded = false
-    private var renderingSpinner = false
+class ControlScreen(context: Context) : FrameLayout(context) {
     private var mediaSeekBar: SeekBar? = null
     private var mediaPercent: TextView? = null
     private var mediaTitle: TextView? = null
     private var mediaArtist: TextView? = null
     private var mediaStatus: TextView? = null
     private var mediaButtons: List<AppCompatImageButton> = emptyList()
-    private var outputSpinner: Spinner? = null
-    private var inputSpinner: Spinner? = null
+    private var outputSelector: Button? = null
+    private var inputSelector: Button? = null
     private var mediaError: TextView? = null
     private var mediaAction: ((ActionCommand) -> Unit)? = null
+    private var currentDevices: List<DeviceInfo> = emptyList()
+    private var currentDeviceKey: String? = null
+    private var revokeDevice: ((String) -> Unit)? = null
+    private var renameDevice: ((String, String) -> Unit)? = null
+    private var backToPairing: (() -> Unit)? = null
+    private var refreshMedia: (() -> Unit)? = null
+    private var devicesPopup: PopupWindow? = null
+    private var deleteDialog: AlertDialog? = null
+    private val contentScroll = ScrollView(context)
+    private val header = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setBackgroundColor(color(R.color.ezwin_background)); setPadding(dp(12), dp(8), dp(12), dp(8)) }
     private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val actionsContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    private val devicesContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
 
     init {
         setBackgroundColor(color(R.color.ezwin_background))
-        addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        contentScroll.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(contentScroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = dp(64) })
+        header.addView(AppCompatImageButton(context).apply { setImageResource(R.drawable.ic_arrow_back_24); contentDescription = context.getString(R.string.main_back_to_pairing); setBackgroundResource(R.drawable.media_icon_button); setOnClickListener { backToPairing?.invoke() } }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        header.addView(View(context), LinearLayout.LayoutParams(0, 1, 1f))
+        header.addView(AppCompatImageButton(context).apply {
+            id = R.id.control_device_management
+            setImageResource(R.drawable.ic_devices_24)
+            contentDescription = context.getString(R.string.control_device_management)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            isFocusable = true
+            isClickable = true
+            setBackgroundResource(R.drawable.media_icon_button)
+            setOnClickListener { showDevicesPopup(this) }
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        addView(header, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64), Gravity.TOP))
         root.addView(actionsContainer)
-        root.addView(devicesContainer, verticalParams(dp(16)))
     }
-
     fun updateLocalVolume(value: Int) {
         mediaSeekBar?.let { if (it.progress != value) it.progress = value }
         mediaPercent?.text = context.getString(R.string.media_volume_percent, value)
     }
 
-    internal fun mediaSpinnersForTest(): Pair<Spinner?, Spinner?> = outputSpinner to inputSpinner
+    internal fun mediaSelectorsForTest(): Pair<Button?, Button?> = outputSelector to inputSelector
+    internal fun devicesPopupForTest(): PopupWindow? = devicesPopup
+    internal fun deleteDialogForTest(): AlertDialog? = deleteDialog
 
     fun updateMediaStateExcludingVolume(ready: ControlUiState.Ready) {
         val state = ready.media
@@ -97,8 +120,8 @@ class ControlScreen(context: Context) : ScrollView(context) {
             button.isEnabled = spec.enabled
             button.alpha = if (spec.enabled) 1f else .38f
         }
-        outputSpinner?.let { configureSpinner(it, state.renderDevices, state.selectedRenderId, ready.mediaLoading || ready.outputDevicePending, "set_output_device") }
-        inputSpinner?.let { configureSpinner(it, state.captureDevices, state.selectedCaptureId, ready.mediaLoading || ready.inputDevicePending, "set_input_device") }
+        outputSelector?.let { configureDeviceButton(it, state.renderDevices, state.selectedRenderId, ready.mediaLoading || ready.outputDevicePending, "set_output_device") }
+        inputSelector?.let { configureDeviceButton(it, state.captureDevices, state.selectedCaptureId, ready.mediaLoading || ready.inputDevicePending, "set_input_device") }
         mediaError?.apply { text = state.error.orEmpty(); visibility = if (state.error.isNullOrBlank()) View.GONE else View.VISIBLE }
     }
 
@@ -108,38 +131,25 @@ class ControlScreen(context: Context) : ScrollView(context) {
         onRevokeDevice: (String) -> Unit,
         onRenameDevice: (String, String) -> Unit,
         onBackToPairing: () -> Unit,
+        onMediaRefresh: () -> Unit = {},
     ) {
+        revokeDevice = onRevokeDevice
+        renameDevice = onRenameDevice
+        backToPairing = onBackToPairing
+        refreshMedia = onMediaRefresh
         when (state) {
-            ControlUiState.Loading -> renderActions(
-                listOf(ActionPlugin("media", context.getString(R.string.media_title), "", "", emptyList())),
-                state,
-                onAction,
-                onBackToPairing,
-            )
-            is ControlUiState.Error -> {
-                actionsContainer.removeAllViews()
-                actionsContainer.addView(emptyView(state.message))
-                devicesContainer.removeAllViews()
-            }
-            is ControlUiState.Ready -> {
-                renderActions(state.actions, state, onAction, onBackToPairing)
-                renderDevices(state.devices, state.currentDeviceKey, onRevokeDevice, onRenameDevice)
-            }
+            ControlUiState.Loading -> renderActions(listOf(ActionPlugin("media", context.getString(R.string.media_title), "", "", emptyList())), state, onAction, onBackToPairing)
+            is ControlUiState.Error -> { actionsContainer.removeAllViews(); actionsContainer.addView(emptyView(state.message)) }
+            is ControlUiState.Ready -> { currentDevices = state.devices; currentDeviceKey = state.currentDeviceKey; renderActions(state.actions, state, onAction, onBackToPairing) }
         }
     }
 
     internal fun renderActions(actions: List<ActionPlugin>, state: ControlUiState, onAction: (ActionCommand) -> Unit, onBack: () -> Unit) {
         actionsContainer.removeAllViews()
-        actionsContainer.addView(secondaryButton(context.getString(R.string.main_back_to_pairing), onBack), iconButtonParams())
-        if (actions.isEmpty()) {
-            actionsContainer.addView(emptyView(context.getString(R.string.control_no_actions)), verticalParams(dp(12)))
-            return
-        }
+        if (actions.isEmpty()) { actionsContainer.addView(emptyView(context.getString(R.string.control_no_actions)), verticalParams(dp(12))); return }
         actions.forEach { plugin ->
             val card = if (plugin.name == "media") mediaCard(state as? ControlUiState.Ready, onAction) else pluginCard(plugin, onAction)
-            actionsContainer.addView(card, verticalParams(dimen(R.dimen.media_card_spacing)).apply {
-                leftMargin = dimen(R.dimen.media_card_horizontal_margin); rightMargin = dimen(R.dimen.media_card_horizontal_margin)
-            })
+            actionsContainer.addView(card, verticalParams(dimen(R.dimen.media_card_spacing)).apply { leftMargin = dimen(R.dimen.media_card_horizontal_margin); rightMargin = dimen(R.dimen.media_card_horizontal_margin) })
         }
     }
 
@@ -149,41 +159,30 @@ class ControlScreen(context: Context) : ScrollView(context) {
         val available = state?.available == true && !loading
         mediaAction = onAction
         return panel().apply {
-            val header = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val mediaHotspot = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                isClickable = true; isFocusable = true
+                contentDescription = context.getString(R.string.media_refresh)
+                setBackgroundResource(R.drawable.media_refresh_ripple)
+                setOnClickListener { refreshMedia?.invoke() }
+            }
             val cover = ImageView(context).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
-                outlineProvider = object : ViewOutlineProvider() {
-                    override fun getOutline(view: View, outline: android.graphics.Outline) {
-                        outline.setRoundRect(0, 0, view.width, view.height, dp(14).toFloat())
-                    }
-                }
-                clipToOutline = true
-                setBackgroundColor(color(R.color.ezwin_panel_alt))
+                outlineProvider = object : ViewOutlineProvider() { override fun getOutline(view: View, outline: android.graphics.Outline) { outline.setRoundRect(0, 0, view.width, view.height, dp(14).toFloat()) } }
+                clipToOutline = true; setBackgroundColor(color(R.color.ezwin_panel_alt))
                 val bitmap = ready?.artwork?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
                 if (bitmap == null) setImageResource(R.drawable.ic_album_placeholder_48) else setImageBitmap(bitmap)
-                contentDescription = if (available) context.getString(
-                    R.string.media_cover_description,
-                    state?.title ?: context.getString(R.string.media_no_content),
-                    state?.artist ?: context.getString(R.string.media_artist_unknown),
-                ) else context.getString(R.string.media_cover_unavailable)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }
-            header.addView(cover, LinearLayout.LayoutParams(dimen(R.dimen.media_cover_size), dimen(R.dimen.media_cover_size)))
-            val texts = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            mediaHotspot.addView(cover, LinearLayout.LayoutParams(dimen(R.dimen.media_cover_size), dimen(R.dimen.media_cover_size)))
+            val texts = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
             mediaTitle = singleLine(state?.title ?: if (loading) context.getString(R.string.media_loading) else context.getString(R.string.media_no_content), 16f, true)
             mediaArtist = singleLine(state?.artist ?: context.getString(R.string.media_artist_unknown), 14f, false)
-            texts.addView(mediaTitle)
-            texts.addView(mediaArtist, verticalParams(dp(6)))
-            val status = when {
-                loading -> context.getString(R.string.media_loading)
-                !available -> context.getString(R.string.media_no_content)
-                state?.playback == MediaPlayback.PLAYING -> context.getString(R.string.media_playing)
-                state?.playback == MediaPlayback.PAUSED -> context.getString(R.string.media_paused)
-                else -> context.getString(R.string.media_stopped)
-            }
-            mediaStatus = metaText(status)
-            texts.addView(mediaStatus, verticalParams(dp(6)))
-            header.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dimen(R.dimen.media_header_gap) })
-            addView(header)
+            texts.addView(mediaTitle); texts.addView(mediaArtist, verticalParams(dp(6)))
+            val status = when { loading -> context.getString(R.string.media_loading); !available -> context.getString(R.string.media_no_content); state?.playback == MediaPlayback.PLAYING -> context.getString(R.string.media_playing); state?.playback == MediaPlayback.PAUSED -> context.getString(R.string.media_paused); else -> context.getString(R.string.media_stopped) }
+            mediaStatus = metaText(status); texts.addView(mediaStatus, verticalParams(dp(6)))
+            mediaHotspot.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dimen(R.dimen.media_header_gap) })
+            addView(mediaHotspot)
 
             val controls = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
             mediaButtons = mediaButtonSpecs(available, state?.playback ?: MediaPlayback.NONE).mapIndexed { index, spec ->
@@ -218,66 +217,114 @@ class ControlScreen(context: Context) : ScrollView(context) {
             mediaSeekBar = seek
             addView(seek, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dimen(R.dimen.media_seek_height)))
             addView(View(context).apply { setBackgroundColor(color(R.color.ezwin_border)) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dimen(R.dimen.media_divider_height)).apply { topMargin = dimen(R.dimen.media_section_gap); bottomMargin = dimen(R.dimen.media_section_gap) })
-            outputSpinner = addDeviceSelector(R.drawable.ic_speaker_20, R.string.media_output_device, R.string.media_select_output, state?.renderDevices.orEmpty(), state?.selectedRenderId, loading || ready?.outputDevicePending == true, "set_output_device", onAction)
-            inputSpinner = addDeviceSelector(R.drawable.ic_microphone_20, R.string.media_input_device, R.string.media_select_input, state?.captureDevices.orEmpty(), state?.selectedCaptureId, loading || ready?.inputDevicePending == true, "set_input_device", onAction)
+            outputSelector = addDeviceSelector(R.drawable.ic_speaker_20, R.string.media_output_device, R.string.media_select_output, state?.renderDevices.orEmpty(), state?.selectedRenderId, loading || ready?.outputDevicePending == true, "set_output_device", onAction)
+            inputSelector = addDeviceSelector(R.drawable.ic_microphone_20, R.string.media_input_device, R.string.media_select_input, state?.captureDevices.orEmpty(), state?.selectedCaptureId, loading || ready?.inputDevicePending == true, "set_input_device", onAction)
             mediaError = metaText(state?.error.orEmpty()).apply { setTextColor(color(R.color.ezwin_error)); visibility = if (state?.error.isNullOrBlank()) View.GONE else View.VISIBLE }
             addView(mediaError, verticalParams(dp(12)))
         }
     }
 
-    private fun LinearLayout.addDeviceSelector(icon: Int, label: Int, description: Int, endpoints: List<AudioEndpoint>, selectedId: String?, disabled: Boolean, command: String, onAction: (ActionCommand) -> Unit): Spinner {
+    private fun LinearLayout.addDeviceSelector(icon: Int, label: Int, description: Int, endpoints: List<AudioEndpoint>, selectedId: String?, disabled: Boolean, command: String, onAction: (ActionCommand) -> Unit): Button {
         val title = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         title.addView(ImageView(context).apply { setImageResource(icon); importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }, LinearLayout.LayoutParams(dp(20), dp(20)))
         title.addView(bodyText(context.getString(label)), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
         addView(title, verticalParams(if (childCount > 6) dp(12) else 0))
-        val spinner = Spinner(context)
-        configureSpinner(spinner, endpoints, selectedId, disabled, command, description, onAction)
-        addView(spinner, verticalParams(dp(6)))
-        return spinner
+        val button = secondaryButton("") { showDeviceSheet(endpoints, selectedId, command, onAction) }
+        button.contentDescription = context.getString(description)
+        configureDeviceButton(button, endpoints, selectedId, disabled, command)
+        addView(button, verticalParams(dp(6)))
+        return button
     }
 
-    private fun configureSpinner(spinner: Spinner, endpoints: List<AudioEndpoint>, selectedId: String?, disabled: Boolean, command: String, description: Int = if (command == "set_output_device") R.string.media_select_output else R.string.media_select_input, onAction: ((ActionCommand) -> Unit)? = mediaAction) {
-        val options = if (endpoints.isEmpty()) {
-            DeviceSelectorOptions(listOf(context.getString(if (disabled) R.string.media_devices_loading else R.string.media_no_devices)), listOf(null), 0)
-        } else {
-            deviceSelectorOptions(endpoints, selectedId, context.getString(R.string.media_choose_device))
+    private fun configureDeviceButton(button: Button, endpoints: List<AudioEndpoint>, selectedId: String?, disabled: Boolean, command: String) {
+        button.text = endpoints.firstOrNull { it.id == selectedId }?.name
+            ?: context.getString(if (endpoints.isEmpty()) if (disabled) R.string.media_devices_loading else R.string.media_no_devices else R.string.media_choose_device)
+        button.isEnabled = !disabled && endpoints.isNotEmpty()
+        button.setOnClickListener { showDeviceSheet(endpoints, selectedId, command, mediaAction ?: return@setOnClickListener) }
+    }
+
+    private fun showDeviceSheet(endpoints: List<AudioEndpoint>, selectedId: String?, command: String, onAction: (ActionCommand) -> Unit) {
+        if (endpoints.isEmpty()) return
+        val dialog = BottomSheetDialog(context)
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(color(R.color.ezwin_panel))
+            setPadding(dp(16))
+            addView(singleLine(context.getString(if (command == "set_output_device") R.string.media_select_output else R.string.media_select_input), 18f, true))
         }
-        val policy = DeviceSelectionGate(selectedId)
-        spinner.adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, options.labels)
-        spinner.setBackgroundResource(R.drawable.ez_input)
-        spinner.minimumHeight = dp(48)
-        spinner.isEnabled = !disabled && endpoints.isNotEmpty()
-        spinner.contentDescription = DeviceSelectorAccessibility(context.getString(description), "").controlDescription
-        spinner.setSelection(options.selectedIndex, false)
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val endpointId = options.endpointIds.getOrNull(position)
-                endpointId?.let { policy.userSelection(it) }?.let { onAction?.invoke(mediaCommand(command, "endpoint_id", it)) }
-                view?.contentDescription = DeviceSelectorAccessibility(spinner.contentDescription.toString(), options.labels[position]).optionDescription
-            }
+        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        endpoints.forEach { endpoint ->
+            list.addView(RadioButton(context).apply {
+                text = endpoint.name
+                setTextColor(color(R.color.ezwin_text))
+                isChecked = endpoint.id == selectedId
+                minHeight = dp(52)
+                setOnClickListener {
+                    if (endpoint.id != selectedId) onAction(mediaCommand(command, "endpoint_id", endpoint.id))
+                    dialog.dismiss()
+                }
+            })
         }
-        spinner.post { policy.finishProgrammaticUpdate() }
+        content.addView(ScrollView(context).apply { addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(360)))
+        dialog.setContentView(content)
+        dialog.show()
     }
 
     private fun mediaCommand(subAction: String, key: String? = null, value: Any? = null) = ActionCommand("media", buildMap { put("sub_action", subAction); if (key != null) put(key, value) })
-    private fun mediaButton(icon: Int, description: Int, enabled: Boolean, click: () -> Unit) = AppCompatImageButton(context).apply { setImageResource(icon); setBackgroundResource(R.drawable.media_icon_button); contentDescription = context.getString(description); isEnabled = enabled; alpha = if (enabled) 1f else .38f; setOnClickListener { click() } }
-
     private fun pluginCard(plugin: ActionPlugin, onAction: (ActionCommand) -> Unit) = panel().apply {
         addView(singleLine(plugin.label, 15f, true))
         if (plugin.subActions.isEmpty()) addView(primaryButton(plugin.label) { onAction(ActionCommand(plugin.name)) }, verticalParams(dp(12))) else addView(GridLayout(context).apply {
             columnCount = 2
-            plugin.subActions.forEach { sub -> addView(primaryButton(sub.label) { onAction(mediaCommandFor(plugin.name, sub.id)) }, gridParams()) }
+            plugin.subActions.forEach { sub -> addView(primaryButton(sub.label) { onAction(ActionCommand(plugin.name, mapOf("sub_action" to sub.id))) }, gridParams()) }
         }, verticalParams(dp(12)))
     }
-    private fun mediaCommandFor(plugin: String, sub: String) = ActionCommand(plugin, mapOf("sub_action" to sub))
 
-    fun renderDevices(devices: List<DeviceInfo>, current: String?, revoke: (String) -> Unit, rename: (String, String) -> Unit) {
-        devicesContainer.removeAllViews(); if (devices.isEmpty()) return
-        devicesContainer.addView(secondaryButton(context.getString(if (devicesExpanded) R.string.control_devices_expanded else R.string.control_devices_collapsed, devices.size)) { devicesExpanded = !devicesExpanded; renderDevices(devices, current, revoke, rename) })
-        if (devicesExpanded) devices.forEach { device -> devicesContainer.addView(panel().apply { addView(bodyText(device.name.ifBlank { device.key })); addView(secondaryButton(context.getString(R.string.control_rename_device)) { showRenameDialog(device, rename) }); addView(secondaryButton(context.getString(R.string.control_revoke_device, device.name)) { revoke(device.key) }) }, verticalParams(dp(8))) }
+    private fun mediaButton(icon: Int, description: Int, enabled: Boolean, click: () -> Unit) = AppCompatImageButton(context).apply { setImageResource(icon); setBackgroundResource(R.drawable.media_icon_button); contentDescription = context.getString(description); isEnabled = enabled; alpha = if (enabled) 1f else .38f; setOnClickListener { click() } }
+
+    fun renderDevices(devices: List<DeviceInfo>, current: String?, revoke: (String) -> Unit, rename: (String, String) -> Unit) { currentDevices = devices; currentDeviceKey = current; revokeDevice = revoke; renameDevice = rename }
+    private fun showDevicesPopup(anchor: View) {
+        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundResource(R.drawable.ez_panel); setPadding(dp(12)) }
+        if (currentDevices.isEmpty()) list.addView(metaText(context.getString(R.string.media_no_devices)))
+        currentDevices.forEach { device ->
+            val row = LinearLayout(context).apply {
+                id = R.id.control_device_row
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(56)
+            }
+            row.addView(bodyText(device.name.ifBlank { device.key }), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (device.key == currentDeviceKey) {
+                row.addView(metaText(context.getString(R.string.control_current_device)).apply {
+                    id = R.id.control_current_device_badge
+                    setTextColor(color(R.color.ezwin_text))
+                    setBackgroundResource(R.drawable.device_current_chip)
+                    contentDescription = context.getString(R.string.control_current_device)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(4) })
+            }
+            row.addView(deviceIconButton(R.id.control_rename_device, R.drawable.ic_edit_24, context.getString(R.string.control_rename_device_description, device.name.ifBlank { device.key })) {
+                showRenameDialog(device) { key, name -> renameDevice?.invoke(key, name) }
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            row.addView(deviceIconButton(R.id.control_delete_device, R.drawable.ic_delete_24, context.getString(R.string.control_delete_device_description, device.name.ifBlank { device.key })) {
+                confirmDeleteDevice(device)
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            list.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        devicesPopup = PopupWindow(list, dp(360), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true; setBackgroundDrawable(ColorDrawable(color(R.color.ezwin_panel))); elevation = dp(8).toFloat(); showAsDropDown(anchor, -dp(312), 0) }
     }
-
+    private fun deviceIconButton(viewId: Int, icon: Int, description: String, click: () -> Unit) = AppCompatImageButton(context).apply {
+        id = viewId
+        setImageResource(icon)
+        setBackgroundResource(R.drawable.media_icon_button)
+        contentDescription = description
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        minimumWidth = dp(48)
+        minimumHeight = dp(48)
+        isFocusable = true
+        setOnClickListener { click() }
+    }
+    private fun confirmDeleteDevice(device: DeviceInfo) {
+        deleteDialog = AlertDialog.Builder(context).setTitle(R.string.control_delete_device_title).setMessage(context.getString(R.string.control_delete_device_confirm, device.name.ifBlank { device.key })).setNegativeButton(android.R.string.cancel, null).setPositiveButton(R.string.control_delete_device) { _, _ -> revokeDevice?.invoke(device.key) }.show()
+    }
     private fun showRenameDialog(device: DeviceInfo, rename: (String, String) -> Unit) {
         val dialog = Dialog(context); val content = panel(); val input = EditText(context).apply { setText(device.name); setTextColor(color(R.color.ezwin_text)); setBackgroundResource(R.drawable.ez_input) }
         content.addView(input); content.addView(primaryButton(context.getString(R.string.control_rename_device)) { dialog.dismiss(); rename(device.key, input.text.toString()) }); dialog.setContentView(content); dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)); dialog.show()

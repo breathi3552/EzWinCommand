@@ -3,8 +3,7 @@
 // ============================================================
 
 const DEVICE_KEY_STORAGE = "ez_device_key";
-const PC_CODE_POLL_MS = 3000;   // PC 端配对码服务器轮询间隔
-const EXT_POLL_MS = 3000;        // 外部页面配对码轮询间隔
+const PC_CODE_POLL_MS = 1000;   // PC 端配对状态每秒轮询
 const COUNTDOWN_TICK_MS = 1000;  // 倒计时每秒更新
 const DEVICE_POLL_MS = 30000;    // 设备列表轮询间隔
 
@@ -214,140 +213,90 @@ async function submitAndTrackCommand(action, params = {}, opts = {}) {
 // PC 管理面板
 // ============================================================
 
-let pcCountdownTimer = null;   // 倒计时定时器 ID
-let pcCountdownRemain = 0;     // 剩余秒数
-let pcPollTimer = null;        // 服务器轮询定时器 ID
+let pcPollTimer = null;
+async function pcFetchPairings() { return fetchJson("/api/local/pairings", {}, "pc-error"); }
+function pcPairingStatus(status) {
+    return {
+        pending: "等待输入",
+        locked: "已锁定",
+        consumed: "已完成",
+        cancelled: "已取消",
+        expired: "已过期",
+    }[status] || "状态未知";
+}
 
-/** 获取当前配对码信息 */
-async function pcFetchPairingCode() {
-    try {
-        return await fetchJson("/api/pairing-code", {}, "pc-error");
-    } catch {
-        return null;
+function pcPairingShortId(pairingId) {
+    const value = String(pairingId || "");
+    return value ? value.slice(0, 8) : "未知";
+}
+
+function pcRenderPairings(data) {
+    const root = document.getElementById("pc-pairing-list");
+    if (!root) return;
+    root.replaceChildren();
+    const pairings = (data && Array.isArray(data.pairings)) ? data.pairings : [];
+    if (pairings.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "pairing-empty";
+        empty.textContent = "等待手机发起配对";
+        root.appendChild(empty);
+        return;
     }
-}
 
-/** 刷新（生成）配对码 */
-async function pcRefreshPairingCode() {
-    try {
-        return await fetchJson("/api/pairing-code/refresh", { method: "POST" }, "pc-error");
-    } catch {
-        return null;
-    }
-}
+    for (const pairing of pairings) {
+        const active = pairing.status === "pending" || pairing.status === "locked";
+        const card = document.createElement("article");
+        card.className = `pairing-card pairing-card--${active ? "active" : "terminal"}`;
 
-/** 显示配对码区域（有码状态） */
-function pcShowPairingActive(code) {
-    document.getElementById("pc-pairing-empty").style.display = "none";
-    document.getElementById("pc-pairing-active").style.display = "";
-    document.getElementById("pc-pairing-code").textContent = code;
-}
+        const header = document.createElement("div");
+        header.className = "pairing-header";
+        const deviceName = document.createElement("strong");
+        deviceName.className = "pairing-device-name";
+        deviceName.textContent = pairing.device_name || "Android";
+        const pairingId = document.createElement("span");
+        pairingId.className = "pairing-id";
+        pairingId.textContent = `配对 ${pcPairingShortId(pairing.pairing_id)}`;
+        header.append(deviceName, pairingId);
+        card.appendChild(header);
 
-/** 显示配对码区域（无码状态） */
-function pcShowPairingEmpty() {
-    document.getElementById("pc-pairing-empty").style.display = "";
-    document.getElementById("pc-pairing-active").style.display = "none";
-    document.getElementById("pc-pairing-code").textContent = "";
-    document.getElementById("pc-countdown").textContent = "05:00";
-}
-
-/** 格式化秒数为 MM:SS */
-function pcFormatCountdown(seconds) {
-    const m = Math.floor(Math.max(0, seconds) / 60);
-    const s = Math.max(0, seconds) % 60;
-    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
-}
-
-/** 启动倒计时 */
-function pcStartCountdown(seconds) {
-    pcStopCountdown();
-    pcCountdownRemain = seconds;
-    document.getElementById("pc-countdown").textContent = pcFormatCountdown(seconds);
-
-    pcCountdownTimer = setInterval(() => {
-        pcCountdownRemain--;
-        document.getElementById("pc-countdown").textContent = pcFormatCountdown(pcCountdownRemain);
-
-        if (pcCountdownRemain <= 0) {
-            pcStopCountdown();
-            pcStopPolling();
-            pcShowPairingEmpty();
+        const code = String(pairing.code || "");
+        if (active && /^\d{4}$/.test(code)) {
+            const codeElement = document.createElement("div");
+            codeElement.className = "pairing-code";
+            codeElement.textContent = code;
+            codeElement.setAttribute("aria-label", "四位配对验证码");
+            card.appendChild(codeElement);
         }
-    }, COUNTDOWN_TICK_MS);
-}
 
-/** 停止倒计时 */
-function pcStopCountdown() {
-    if (pcCountdownTimer) {
-        clearInterval(pcCountdownTimer);
-        pcCountdownTimer = null;
+        const meta = document.createElement("div");
+        meta.className = "pairing-meta";
+        if (active) {
+            const countdown = document.createElement("span");
+            countdown.className = "pairing-countdown";
+            countdown.textContent = `剩余 ${Math.max(0, Number(pairing.expires_in) || 0)} 秒`;
+            meta.appendChild(countdown);
+        }
+        const status = document.createElement("span");
+        status.className = `pairing-status pairing-status--${String(pairing.status || "unknown")}`;
+        status.textContent = pcPairingStatus(pairing.status);
+        meta.appendChild(status);
+        card.appendChild(meta);
+        root.appendChild(card);
     }
-    pcCountdownRemain = 0;
 }
-
-/** 启动服务器轮询（同步过期状态） */
+async function pcRefreshPairings() { pcRenderPairings(await pcFetchPairings()); }
 function pcStartPolling() {
-    pcStopPolling();
-    pcPollTimer = setInterval(async () => {
-        const data = await pcFetchPairingCode();
-        if (!data || !data.code) {
-            // 服务器端已过期或无码
-            pcStopCountdown();
-            pcStopPolling();
-            pcShowPairingEmpty();
-        }
-    }, PC_CODE_POLL_MS);
+    pcStopPolling(); pcRefreshPairings();
+    pcPollTimer = setInterval(pcRefreshPairings, PC_CODE_POLL_MS);
 }
-
-/** 停止服务器轮询 */
-function pcStopPolling() {
-    if (pcPollTimer) {
-        clearInterval(pcPollTimer);
-        pcPollTimer = null;
-    }
-}
-
-/** 处理「生成配对码」按钮 */
-async function pcHandleGenerate() {
-    const btn = document.getElementById("pc-generate-btn");
-    btn.disabled = true;
-    btn.textContent = "生成中…";
-
-    const data = await pcRefreshPairingCode();
-    btn.disabled = false;
-    btn.textContent = "生成配对码";
-
-    if (data && data.code) {
-        pcShowPairingActive(data.code);
-        const expiresIn = data.expires_in || 300;
-        pcStartCountdown(expiresIn);
-        pcStartPolling();
-    }
-}
-
-/** 处理「刷新」按钮 */
-async function pcHandleRefresh() {
-    const btn = document.getElementById("pc-refresh-btn");
-    btn.disabled = true;
-    btn.textContent = "刷新中…";
-
-    const data = await pcRefreshPairingCode();
-    btn.disabled = false;
-    btn.textContent = "刷新";
-
-    if (data && data.code) {
-        document.getElementById("pc-pairing-code").textContent = data.code;
-        const expiresIn = data.expires_in || 300;
-        pcStartCountdown(expiresIn);
-    }
-}
+function pcStopPolling() { clearInterval(pcPollTimer); pcPollTimer = null; }
 
 // ---- PC 设备管理 ----
 
 /** 加载设备列表（PC 端，无需鉴权） */
 async function pcLoadDevices() {
     try {
-        const data = await fetchJson("/api/devices", {}, "pc-error");
+        const data = await fetchJson("/api/devices");
         const tbody = document.getElementById("pc-device-tbody");
         const emptyEl = document.getElementById("pc-device-empty");
         tbody.innerHTML = "";
@@ -515,21 +464,8 @@ async function pcSendCommand(action, params = {}) {
 async function initPCPanel() {
     document.getElementById("pc-panel").style.display = "";
 
-    // 绑定按钮事件
-    document.getElementById("pc-generate-btn").addEventListener("click", pcHandleGenerate);
-    document.getElementById("pc-refresh-btn").addEventListener("click", pcHandleRefresh);
-
-    // 加载配对码状态
-    const data = await pcFetchPairingCode();
-    if (data && data.code) {
-        pcShowPairingActive(data.code);
-        // 倒计时使用服务器返回的剩余秒数
-        const expiresIn = data.expires_in || 300;
-        pcStartCountdown(expiresIn);
-        pcStartPolling();
-    } else {
-        pcShowPairingEmpty();
-    }
+    document.getElementById("pc-refresh-btn").addEventListener("click", pcRefreshPairings);
+    pcStartPolling();
 
     // 加载设备列表
     pcLoadDevices();
@@ -543,143 +479,27 @@ async function initPCPanel() {
 // 外部页面
 // ============================================================
 
-let extPollTimer = null;
-
-/** 获取当前配对码信息 */
-async function extFetchPairingCode() {
-    try {
-        return await fetchJson("/api/pairing-code");
-    } catch {
-        return null;
-    }
-}
+/** 远程页面不得读取仅限 localhost 的配对码接口。 */
 
 /** 显示配对待机页 */
 function extShowStandby() {
     document.getElementById("ext-standby").style.display = "";
-    document.getElementById("ext-pairing").style.display = "none";
     document.getElementById("ext-dashboard").style.display = "none";
 }
 
-/** 显示配对输入页 */
-function extShowPairing() {
-    document.getElementById("ext-standby").style.display = "none";
-    document.getElementById("ext-pairing").style.display = "";
-    document.getElementById("ext-dashboard").style.display = "none";
-}
+/** 未授权远程页面保持等待状态，配对由 Android App 发起。 */
 
 /** 显示外部控制面板 */
 function extShowDashboard() {
-    extStopPolling();
     document.getElementById("ext-standby").style.display = "none";
-    document.getElementById("ext-pairing").style.display = "none";
     document.getElementById("ext-dashboard").style.display = "";
     extLoadActions();
     extLoadDevices();
     setInterval(extLoadDevices, DEVICE_POLL_MS);
 }
 
-/** 回到待机/配对流程 */
-async function extReturnToPairing() {
-    const data = await extFetchPairingCode();
-    if (data && data.has_code) {
-        extShowPairing();
-    } else {
-        extShowStandby();
-        extStartPolling();
-    }
-}
-
-// ---- 外部配对逻辑 ----
-
-/** 处理配对码输入焦点跳转与粘贴 */
-function setupCodeInputs() {
-    const cells = document.querySelectorAll("#ext-pairing .code-cell");
-    cells.forEach((cell, index) => {
-        cell.addEventListener("input", () => {
-            const val = cell.value.replace(/[^0-9a-z]/gi, "").toLowerCase();
-            cell.value = val.slice(-1);
-            if (val && index < cells.length - 1) {
-                cells[index + 1].focus();
-            }
-        });
-        cell.addEventListener("keydown", (e) => {
-            if (e.key === "Backspace" && !cell.value && index > 0) {
-                cells[index - 1].focus();
-            }
-        });
-        cell.addEventListener("paste", (e) => {
-            e.preventDefault();
-            const pasted = (e.clipboardData || window.clipboardData).getData("text").trim();
-            const cleaned = pasted.replace(/[^0-9a-z]/gi, "").toLowerCase().slice(0, 4);
-            for (let i = 0; i < 4; i++) {
-                cells[i].value = cleaned[i] || "";
-            }
-            const focusIdx = Math.min(cleaned.length, 3);
-            cells[focusIdx].focus();
-        });
-    });
-}
-
-/** 获取 4 位输入框拼合的配对码 */
-function readPairingCode() {
-    const cells = document.querySelectorAll("#ext-pairing .code-cell");
-    return Array.from(cells).map(c => c.value).join("");
-}
-
-/** 配对按钮点击处理 */
-async function handlePair() {
-    const code = readPairingCode();
-    const errorEl = document.getElementById("pair-error");
-
-    if (code.length !== 4) {
-        errorEl.textContent = "请输入完整的 4 位配对码";
-        return;
-    }
-
-    errorEl.textContent = "";
-    document.getElementById("pair-btn").disabled = true;
-
-    try {
-        const data = await fetchJson("/api/authorize", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: code, name: navigator.platform || "Web 浏览器" }),
-        }, "pair-error");
-
-        if (data.success && data.device_key) {
-            localStorage.setItem(DEVICE_KEY_STORAGE, data.device_key);
-            extStopPolling();
-            extShowDashboard();
-        } else {
-            errorEl.textContent = data.message || "配对失败，请重试";
-        }
-    } catch (e) {
-        errorEl.textContent = e.message || "网络错误，请检查连接";
-    } finally {
-        document.getElementById("pair-btn").disabled = false;
-    }
-}
-
-/** 停止外部轮询 */
-function extStopPolling() {
-    if (extPollTimer) {
-        clearInterval(extPollTimer);
-        extPollTimer = null;
-    }
-}
-
-/** 启动配对码轮询（待机页用） */
-function extStartPolling() {
-    extStopPolling();
-    extPollTimer = setInterval(async () => {
-        const data = await extFetchPairingCode();
-        if (data && data.has_code) {
-            // 配对码出现，切换到配对输入页；外部页面不显示配对码正文
-            extStopPolling();
-            extShowPairing();
-        }
-    }, EXT_POLL_MS);
+function extReturnToPairing() {
+    extShowStandby();
 }
 
 // ---- 外部控制面板 ----
@@ -787,12 +607,8 @@ async function initExternal() {
         }
     }
 
-    // 情况 2：无有效本地 key，检查是否有配对码
-    await extReturnToPairing();
-
-    // 绑定配对页事件
-    setupCodeInputs();
-    document.getElementById("pair-btn").addEventListener("click", handlePair);
+    // 情况 2：无有效本地 key，保持待机；配对请求与验证码由 Android App / PC 本机页处理
+    extReturnToPairing();
 }
 
 

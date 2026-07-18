@@ -72,6 +72,24 @@ class MediaEventHub:
                     pass
             queue.put_nowait(None)
 
+
+    def _subscribe(self, since: int, digest: str) -> tuple[asyncio.Queue[MediaState | None], list[MediaState]]:
+        if digest in self.revoked_digests:
+            raise PermissionError
+        queue: asyncio.Queue[MediaState | None] = asyncio.Queue(maxsize=1)
+        self.subscribers[queue] = digest
+        current = self.service.snapshot()
+        if since > current.revision:
+            self.subscribers.pop(queue, None)
+            raise ValueError("revision 不能大于当前值")
+        if since == current.revision:
+            initial = []
+        elif not self.replay or since < self.replay[0].revision:
+            initial = [current]
+        else:
+            initial = [state for state in self.replay if state.revision > since]
+        return queue, initial
+
     def initial(self, since: int) -> list[MediaState]:
         current = self.service.snapshot()
         if since > current.revision:
@@ -83,12 +101,12 @@ class MediaEventHub:
         return [state for state in self.replay if state.revision > since]
 
     async def stream(self, since: int, digest: str = "") -> AsyncIterator[str]:
-        queue: asyncio.Queue[MediaState | None] = asyncio.Queue(maxsize=1)
-        if digest in self.revoked_digests:
-            return
-        self.subscribers[queue] = digest
         try:
-            for state in self.initial(since):
+            queue, initial = self._subscribe(since, digest)
+        except PermissionError:
+            return
+        try:
+            for state in initial:
                 yield self.frame(state)
                 since = state.revision
             while True:
@@ -99,8 +117,6 @@ class MediaEventHub:
                 except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
-                # queue 只承担 latest-wins 唤醒；业务状态始终从 replay ring
-                # 按 revision 补发，避免初始 replay yield 期间丢失中间 revision。
                 for state in self.initial(since):
                     yield self.frame(state)
                     since = state.revision
@@ -121,11 +137,14 @@ class CommandRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-class AuthorizeRequest(BaseModel):
-    """设备配对请求体。"""
-    token: str = Field(min_length=1, max_length=64)
-    name: str = Field(min_length=1, max_length=128)
+class PairingCreateRequest(BaseModel):
+    device_name: str = Field(default="Android", min_length=1, max_length=128)
 
+class PairingCompleteRequest(BaseModel):
+    server_id: str
+    pairing_id: str
+    code: str = Field(min_length=4, max_length=4)
+    device_name: str = Field(default="Android", min_length=1, max_length=128)
 
 def _is_local_client(request: Request) -> bool:
     """判断请求是否来自本机或 FastAPI TestClient。"""
@@ -227,6 +246,15 @@ async def get_command(command_id: str, request: Request):
 async def get_media_state(request: Request):
     return serialize_media_state(request.app.state.media_service.snapshot())
 
+@router.post("/api/media/refresh")
+async def refresh_media_state(request: Request):
+    try:
+        future = request.app.state.media_service.request_refresh({"devices", "audio", "media", "artwork"})
+        state = await asyncio.wrap_future(future)
+    except Exception:
+        return JSONResponse(status_code=503, content={"detail": "媒体服务不可用"})
+    return serialize_media_state(state)
+
 
 @router.get("/api/media/cover/{artwork_id}")
 async def get_media_cover(artwork_id: str, request: Request):
@@ -306,84 +334,43 @@ async def set_plugin_enabled(plugin_name: str, body: _EnablePluginBody, request:
 
 
 def _get_auth_manager(request: Request):
-    """从 app state 中获取 AuthManager 单例。"""
     return request.app.state.auth_manager
 
+@router.get("/api/identity")
+async def identity(request: Request):
+    value = request.app.state.server_identity
+    return {"protocol_version": value.version, "server_id": value.server_id,
+            "display_name": value.name, "port": request.app.state.discovery_publisher.port}
 
-@router.get("/api/pairing-code")
-async def get_pairing_code(request: Request):
-    """获取当前配对码状态。
+@router.post("/api/pairings", status_code=201)
+async def create_pairing(body: PairingCreateRequest, request: Request):
+    return _get_auth_manager(request).create_pairing(body.device_name)
 
-    本机/TestClient 返回 code；非本机只返回状态元数据，避免在局域网泄漏配对码。
-    """
-    auth_manager = _get_auth_manager(request)
-    payload = {
-        "has_code": auth_manager.get_pairing_code() is not None,
-        "has_devices": auth_manager.has_devices(),
-        "expires_in": auth_manager.get_pairing_code_expires_in(),
-    }
-    if _is_local_client(request):
-        payload["code"] = auth_manager.get_pairing_code()
-    return payload
+@router.post("/api/pairings/{pairing_id}/complete")
+async def complete_pairing(pairing_id: str, body: PairingCompleteRequest, request: Request):
+    if body.pairing_id != pairing_id:
+        return JSONResponse(status_code=404, content={"detail": "配对请求不存在"})
+    key = _get_auth_manager(request).complete_pairing(body.server_id, pairing_id, body.code, body.device_name)
+    if not key:
+        return JSONResponse(status_code=403, content={"detail": "验证码无效或已锁定"})
+    return JSONResponse(status_code=201, content={"success": True, "device_key": key})
 
+@router.delete("/api/pairings/{pairing_id}")
+async def cancel_pairing(pairing_id: str, request: Request):
+    ok = _get_auth_manager(request).cancel_pairing(pairing_id)
+    return Response(status_code=204 if ok else 404)
 
-@router.post("/api/authorize")
-async def authorize(body: AuthorizeRequest, request: Request):
-    """新设备配对鉴权。
-
-    无需鉴权。Body: {"token": "配对码", "name": "设备名称"}。
-    成功返回 201 + device_key，失败返回 403。
-    """
-    auth_manager = _get_auth_manager(request)
-    device_key = auth_manager.try_pair(body.token, body.name)
-    if device_key:
-        return JSONResponse(
-            status_code=201,
-            content={"success": True, "device_key": device_key},
-        )
-    return JSONResponse(
-        status_code=403,
-        content={"success": False, "message": "配对码无效或已锁定"},
-    )
+@router.get("/api/local/pairings")
+async def local_pairings(request: Request):
+    if not _is_local_client(request):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    return {"pairings": _get_auth_manager(request).list_pairings(include_code=True)}
 
 
 @router.get("/api/devices")
 async def list_devices(request: Request):
-    """列出所有已配对设备。
-
-    需要鉴权。
-    """
-    auth_manager = _get_auth_manager(request)
-    return {"devices": auth_manager.list_devices()}
-
-
-@router.delete("/api/devices/{device_key}")
-async def remove_device(device_key: str, request: Request):
-    """移除已配对设备。
-
-    需要鉴权。
-    """
-    auth_manager = _get_auth_manager(request)
-    success = auth_manager.remove_device(device_key)
-    if success:
-        request.app.state.media_event_hub.revoke(hashlib.sha256(device_key.encode()).hexdigest())
-    return {"success": success}
-
-
-@router.post("/api/pairing-code/refresh")
-async def refresh_pairing_code(request: Request):
-    """强制生成新配对码（仅 localhost 可达，由 _is_local_client 检查保证）。
-
-    Returns:
-        {"code": "a3x9", "expires_in": 300}
-    """
-    if not _is_local_client(request):
-        return JSONResponse(status_code=403, content={"detail": "仅允许本机刷新配对码"})
-    auth_manager = _get_auth_manager(request)
-    code = auth_manager.generate_new_code()
-    return {"code": code, "expires_in": auth_manager.get_pairing_code_expires_in()}
-
-
+    """列出已配对设备；鉴权中间件仅允许本机无凭据访问。"""
+    return {"devices": _get_auth_manager(request).list_devices()}
 class _RenameBody(BaseModel):
     """设备重命名请求体。"""
     name: str

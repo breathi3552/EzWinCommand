@@ -7,10 +7,10 @@ data class PendingCommand(val action: String, val params: Map<String, Any?>, val
 
 class PendingCommandStore(
     private val preferences: SharedPreferences,
-    baseUrl: String,
-    deviceKey: String?,
+    serverId: String,
+    credentialVersion: Long,
 ) {
-    private val namespace = "pending:${normalizeBaseUrl(baseUrl)}:${sha256(deviceKey.orEmpty())}:"
+    private val namespace = "pending:${serverId.trim()}:$credentialVersion:"
 
     fun key(action: String, params: Map<String, Any?>): String {
         val subAction = params["sub_action"]
@@ -47,17 +47,11 @@ class PendingCommandStore(
     }
 
     private fun metaKey(commandId: String) = namespace + "pending_meta_" + commandId
-
-    private companion object {
-        fun normalizeBaseUrl(value: String): String {
-            val raw = value.trim().trimEnd('/').let { if (it.contains("://")) it else "http://$it" }
-            val uri = java.net.URI(raw)
-            val port = if (uri.port == -1) "" else ":${uri.port}"
-            return "${uri.scheme.lowercase()}://${uri.host.lowercase()}$port"
-        }
-        fun sha256(value: String): String {
-            val bytes = java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
-            return bytes.joinToString("") { "%02x".format(it) }
-        }
+    fun clearServerGenerations(serverId: String, keepCredentialVersion: Long) {
+        val prefix = "pending:${serverId.trim()}:"
+        val editor = preferences.edit()
+        preferences.all.keys.filter { it.startsWith(prefix) && !it.startsWith("pending:${serverId.trim()}:$keepCredentialVersion:") }.forEach(editor::remove)
+        editor.commit()
     }
+
 }

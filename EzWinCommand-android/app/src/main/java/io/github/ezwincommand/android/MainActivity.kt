@@ -18,12 +18,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import io.github.ezwincommand.android.databinding.ActivityMainBinding
 import io.github.ezwincommand.android.network.EzApiClient
+import io.github.ezwincommand.android.network.DiscoveredServer
+import io.github.ezwincommand.android.network.DiscoveryEvent
+import io.github.ezwincommand.android.network.NsdDiscoveryClient
 import io.github.ezwincommand.android.state.ConnectionCheckResult
 import io.github.ezwincommand.android.state.ConnectionRepository
 import io.github.ezwincommand.android.state.NormalizeResult
 import io.github.ezwincommand.android.state.PairingResult
-import io.github.ezwincommand.android.storage.DeviceKeyStore
-import io.github.ezwincommand.android.storage.SharedPreferencesDeviceKeyStore
+import io.github.ezwincommand.android.storage.KeystoreCipher
+import io.github.ezwincommand.android.storage.ServerSessionStore
 import io.github.ezwincommand.android.ui.control.ActionCommand
 import io.github.ezwincommand.android.ui.control.AndroidUiCoordinator
 import io.github.ezwincommand.android.ui.control.AndroidUiEffect
@@ -43,12 +46,14 @@ import java.net.URI
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
-    private val deviceKeyStore: DeviceKeyStore by lazy {
-        SharedPreferencesDeviceKeyStore(getSharedPreferences("ezwincommand", MODE_PRIVATE))
+    private val sessionStore: ServerSessionStore by lazy {
+        ServerSessionStore(getSharedPreferences("ezwincommand", MODE_PRIVATE), KeystoreCipher())
     }
-    private val connectionRepository by lazy { ConnectionRepository(deviceKeyStore) }
+    private val connectionRepository by lazy { ConnectionRepository(sessionStore) }
+    private val discoveryClient by lazy { NsdDiscoveryClient(applicationContext) }
+    private var discoveredServers: List<DiscoveredServer> = emptyList()
     private val coordinator: AndroidUiCoordinator by lazy {
-        AndroidUiCoordinator(connectionRepository) { baseUrl -> createController(baseUrl) }
+        AndroidUiCoordinator(connectionRepository) { serverId -> createController(serverId) }
     }
     private var activeController: ControlController? = null
     private var activeBaseUrl: String? = null
@@ -72,6 +77,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        discoveryClient.stop()
+        connectionRepository.cancelCurrent()
         activeController?.cancelTracking()
         controlPageGate.invalidate()
         super.onStop()
@@ -86,16 +93,64 @@ class MainActivity : AppCompatActivity() {
         binding.deviceNameInput.setText(getString(R.string.main_device_default))
         binding.testConnectionButton.setOnClickListener { testConnection() }
         binding.pairButton.setOnClickListener { pairDevice() }
-        binding.pairingCard.visibility = View.GONE
-        binding.connectionStatusText.visibility = View.GONE
+        binding.refreshButton.setOnClickListener { refreshPairingPage() }
+        binding.manualToggle.setOnClickListener {
+            val expanded = binding.connectionCard.visibility != View.VISIBLE
+            binding.connectionCard.visibility = if (expanded) View.VISIBLE else View.GONE
+            binding.manualToggle.setText(if (expanded) R.string.main_manual_expanded else R.string.main_manual_collapsed)
+        }
+        binding.pairingCodeInput.inputType = InputType.TYPE_CLASS_NUMBER
+        binding.connectionCard.visibility = View.GONE
 
         lifecycleScope.launch {
-            setInputsEnabled(false)
-            showTopMessage(getString(R.string.main_status_restoring))
+            connectionRepository.migrateLegacy()
             renderEffect(coordinator.restoreSession())
-            setInputsEnabled(true)
+            if (coordinator.state == AndroidUiState.Main) refreshPairingPage()
         }
-        renderState()
+
+    }
+
+    private fun refreshPairingPage() {
+        binding.scanStatusText.setText(R.string.main_scan_scanning)
+        binding.refreshButton.isEnabled = false
+        discoveryClient.scan { event ->
+            runOnUiThread {
+                when (event) {
+                    is DiscoveryEvent.Updated -> { discoveredServers = event.servers; renderServerLists() }
+                    is DiscoveryEvent.Finished -> { discoveredServers = event.servers; renderServerLists(); binding.scanStatusText.setText(R.string.main_scan_finished); binding.refreshButton.isEnabled = true }
+                    is DiscoveryEvent.Unavailable -> { discoveredServers = emptyList(); renderServerLists(); binding.scanStatusText.text = event.message; binding.refreshButton.isEnabled = true }
+                }
+            }
+        }
+    }
+
+    private fun renderServerLists() {
+        val saved = connectionRepository.savedServers()
+        val savedById = saved.associateBy { it.serverId }
+        binding.nearbyList.removeAllViews()
+        if (discoveredServers.isEmpty()) binding.nearbyList.addView(binding.nearbyEmptyText.also { (it.parent as? ViewGroup)?.removeView(it) })
+        discoveredServers.forEach { server ->
+            val known = savedById[server.serverId]
+            binding.nearbyList.addView(serverButton(server.name, server.serverId, if (known?.needsRepair == true) getString(R.string.main_server_repair) else getString(R.string.main_server_online)) { connectFromList(server.baseUrl) })
+        }
+        binding.historyList.removeAllViews()
+        if (saved.isEmpty()) binding.historyList.addView(binding.historyEmptyText.also { (it.parent as? ViewGroup)?.removeView(it) })
+        saved.forEach { session ->
+            val online = discoveredServers.firstOrNull { it.serverId == session.serverId }
+            val status = when { session.needsRepair -> getString(R.string.main_server_repair); online != null -> getString(R.string.main_server_online); else -> getString(R.string.main_server_offline) }
+            binding.historyList.addView(serverButton(session.deviceName.ifBlank { session.serverId }, session.serverId, status) { connectFromList(online?.baseUrl ?: session.baseUrl) })
+        }
+    }
+
+    private fun serverButton(name: String, serverId: String, status: String, action: () -> Unit) = Button(this).apply {
+        text = "$name · ${serverId.take(8)} · $status"
+        isAllCaps = false
+        setOnClickListener { action() }
+    }
+
+    private fun connectFromList(baseUrl: String) {
+        populateBaseUrl(baseUrl)
+        testConnection()
     }
 
     private fun testConnection() {
@@ -105,11 +160,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             when (val result = connectionRepository.testConnection(baseUrl)) {
                 is ConnectionCheckResult.Reachable -> {
-                    val savedBaseUrl = deviceKeyStore.getBaseUrl()?.trim().orEmpty()
-                    val savedKey = deviceKeyStore.getDeviceKey()?.trim().orEmpty()
-                    if (savedBaseUrl == result.baseUrl && savedKey.isNotEmpty()) {
+                    if (result.pairingId == null && result.savedSession != null) {
                         showTopMessage(getString(R.string.main_session_restored))
-                        renderEffect(AndroidUiEffect.OpenControl(result.baseUrl))
+                        renderEffect(AndroidUiEffect.OpenControl(result.identity.serverId, result.baseUrl))
                     } else {
                         showTopMessage(getString(R.string.main_connection_success))
                         showPairingDialog(result.baseUrl)
@@ -139,11 +192,12 @@ class MainActivity : AppCompatActivity() {
             when (val result = connectionRepository.pair(baseUrl, pairingCode, deviceName)) {
                 is PairingResult.Paired -> {
                     showTopMessage(getString(R.string.main_pairing_success))
-                    renderEffect(AndroidUiEffect.OpenControl(result.baseUrl))
+                    renderEffect(AndroidUiEffect.OpenControl(result.session.serverId, result.session.baseUrl))
                 }
+                PairingResult.UiInvalidated -> return@launch
                 is PairingResult.Failed -> showTopMessage(errorMessage(result.message))
             }
-            setInputsEnabled(true)
+            if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) setInputsEnabled(true)
         }
     }
 
@@ -202,7 +256,7 @@ class MainActivity : AppCompatActivity() {
                 showMainScreen()
                 showTopMessage(errorMessage(effect.message))
             }
-            is AndroidUiEffect.OpenControl -> openControl(effect.baseUrl)
+            is AndroidUiEffect.OpenControl -> openControl(effect.serverId, effect.baseUrl)
             AndroidUiEffect.ReturnToMain -> showMainScreen()
         }
     }
@@ -210,7 +264,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderState() {
         when (val state = coordinator.state) {
             AndroidUiState.Main -> showMainScreen()
-            is AndroidUiState.Control -> openControl(state.baseUrl)
+            is AndroidUiState.Control -> openControl(state.serverId, state.baseUrl)
         }
     }
 
@@ -219,9 +273,9 @@ class MainActivity : AppCompatActivity() {
         activeController?.close()
         activeController = null
         activeBaseUrl = null
-        activeReadyState = null
         binding.titleText.visibility = View.VISIBLE
-        binding.connectionCard.visibility = View.VISIBLE
+        binding.connectionCard.visibility = View.GONE
+        binding.manualToggle.setText(R.string.main_manual_collapsed)
         binding.pairingCard.visibility = View.GONE
         binding.controlContainer.removeAllViews()
         binding.connectionStatusText.visibility = View.GONE
@@ -239,7 +293,7 @@ class MainActivity : AppCompatActivity() {
         mediaLifecycleJob = null
     }
 
-    private fun openControl(baseUrl: String) {
+    private fun openControl(serverId: String, baseUrl: String) {
         closeMediaSession()
         activeController?.close()
         binding.titleText.visibility = View.GONE
@@ -248,21 +302,21 @@ class MainActivity : AppCompatActivity() {
         binding.pairingCard.visibility = View.GONE
         binding.controlContainer.removeAllViews()
         binding.controlContainer.addView(screen)
-        val controller = createController(baseUrl)
+        val controller = createController(serverId)
         activeController = controller
         activeBaseUrl = baseUrl
         val pageTicket = controlPageGate.begin(controller, baseUrl)
         activeLoadJob = lifecycleScope.launch {
             var currentState = controller.load()
             if (!controlPageGate.afterLoad(pageTicket, binding.controlContainer.indexOfChild(screen) >= 0) { trackActivePending() }) return@launch
-            coordinator.updateControlState(baseUrl, currentState)
+            coordinator.updateControlState(serverId, baseUrl, currentState)
             fun redraw(updated: ControlUiState) {
                 currentState = updated
                 activeReadyState = updated as? ControlUiState.Ready
-                coordinator.updateControlState(baseUrl, updated)
-                renderControl(screen, controller, baseUrl, updated)
+                coordinator.updateControlState(serverId, baseUrl, updated)
+                renderControl(screen, controller, serverId, baseUrl, updated)
             }
-            renderControl(screen, controller, baseUrl, currentState)
+            renderControl(screen, controller, serverId, baseUrl, currentState)
             activeReadyState = currentState as? ControlUiState.Ready
             val initialReady = currentState as? ControlUiState.Ready
             if (initialReady != null) {
@@ -272,7 +326,9 @@ class MainActivity : AppCompatActivity() {
                         lateinit var volumeActor: MediaVolumeActor
                         volumeActor = MediaVolumeActor(
                             scope = this,
-                            execute = { controller.sendMediaAction("set_volume", it) },
+                            execute = {
+                                controller.sendMediaAction("set_volume", it).also { mediaConnection?.refresh() }
+                            },
                             onLocalValue = screen::updateLocalVolume,
                             onConfirmed = { },
                             onFailure = { confirmed, message ->
@@ -299,7 +355,7 @@ class MainActivity : AppCompatActivity() {
                                 activeReadyState = updated
                                 if (!busy) redraw(updated) else {
                                     currentState = updated
-                                    coordinator.updateControlState(baseUrl, updated)
+                                    coordinator.updateControlState(serverId, baseUrl, updated)
                                     screen.updateMediaStateExcludingVolume(updated)
                                 }
                             },
@@ -311,7 +367,7 @@ class MainActivity : AppCompatActivity() {
                                 val ready = activeReadyState ?: currentState as? ControlUiState.Ready ?: return@MediaConnectionController
                                 redraw(ready.copy(media = ready.media.copy(error = message), mediaLoading = false))
                             },
-                            onAuthInvalid = { lifecycleScope.launch { renderEffect(coordinator.onAuthInvalid()) } },
+                            onAuthInvalid = { lifecycleScope.launch { renderEffect(coordinator.onAuthInvalid(serverId)) } },
                         )
                         mediaConnection = connection
                         connection.start(controller)
@@ -333,6 +389,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderControl(
         screen: ControlScreen,
         controller: ControlController,
+        serverId: String,
         baseUrl: String,
         controlState: ControlUiState,
     ) {
@@ -354,18 +411,18 @@ class MainActivity : AppCompatActivity() {
                     if (isDeviceCommand && before != null) {
                         val pending = before.withDevicePending(subAction, true)
                         activeReadyState = pending
-                        coordinator.updateControlState(baseUrl, pending)
+                        coordinator.updateControlState(serverId, baseUrl, pending)
                         screen.updateMediaStateExcludingVolume(pending)
                     }
                     try {
-                        controller.sendMediaAction(subAction, value)
+                        controller.sendMediaAction(subAction, value).also { mediaConnection?.refresh() }
                     } finally {
                         if (isDeviceCommand) {
                             val current = activeReadyState ?: before
                             if (current != null && activeController === controller && activeBaseUrl == baseUrl) {
                                 val cleared = current.withDevicePending(subAction, false)
                                 activeReadyState = cleared
-                                coordinator.updateControlState(baseUrl, cleared)
+                                coordinator.updateControlState(serverId, baseUrl, cleared)
                                 screen.updateMediaStateExcludingVolume(cleared)
                             }
                         }
@@ -384,9 +441,13 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 val revoked = controller.revokeDevice(value)
                 showTopMessage(if (revoked) getString(R.string.control_revoke_success) else errorMessage(getString(R.string.control_revoke_failed)))
+                if (revoked && value == activeReadyState?.currentDeviceKey) {
+                    returnToPairing(baseUrl)
+                    return@launch
+                }
                 val refreshed = controller.load()
-                coordinator.updateControlState(baseUrl, refreshed)
-                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker) { returnToPairing(baseUrl) }
+                coordinator.updateControlState(serverId, baseUrl, refreshed)
+                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() })
             }
         }
         renameInvoker = { value, name ->
@@ -394,11 +455,11 @@ class MainActivity : AppCompatActivity() {
                 val renamed = controller.renameDevice(value, name)
                 showTopMessage(if (renamed) getString(R.string.control_rename_device_success) else errorMessage(getString(R.string.control_rename_device_failed)))
                 val refreshed = controller.load()
-                coordinator.updateControlState(baseUrl, refreshed)
-                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker) { returnToPairing(baseUrl) }
+                coordinator.updateControlState(serverId, baseUrl, refreshed)
+                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() })
             }
         }
-        screen.render(controlState, actionInvoker, revokeInvoker, renameInvoker) { returnToPairing(baseUrl) }
+        screen.render(controlState, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() })
     }
 
     private fun returnToPairing(baseUrl: String) {
@@ -494,22 +555,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        discoveryClient.close()
         closeMediaSession()
         activeController?.close()
         activeController = null
         super.onDestroy()
     }
 
-    private fun createController(baseUrl: String): ControlController {
-        val apiClient = EzApiClient(baseUrl, { deviceKeyStore.getDeviceKey() }, timeoutMillis = 5_000)
+    private fun createController(serverId: String): ControlController {
+        val session = connectionRepository.session(serverId) ?: error("会话不存在")
+        val apiClient = EzApiClient(session.baseUrl, { connectionRepository.deviceKey(serverId) }, timeoutMillis = 5_000)
         val pendingStore = io.github.ezwincommand.android.storage.PendingCommandStore(
             getSharedPreferences("ezwincommand_pending", MODE_PRIVATE),
-            baseUrl,
-            deviceKeyStore.getDeviceKey(),
+            serverId,
+            session.credentialVersion,
         )
-        return ControlController(apiClient, currentDeviceKeyProvider = { deviceKeyStore.getDeviceKey() }, onAuthInvalid = {
+        return ControlController(apiClient, currentDeviceKeyProvider = { connectionRepository.deviceKey(serverId) }, onAuthInvalid = {
             lifecycleScope.launch {
-                renderEffect(coordinator.onAuthInvalid())
+                renderEffect(coordinator.onAuthInvalid(serverId))
                 showTopMessage(errorMessage(getString(R.string.main_restore_failed)))
             }
         }, pendingStore = pendingStore)

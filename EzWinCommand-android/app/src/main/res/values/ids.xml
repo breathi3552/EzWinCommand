@@ -1,0 +1,7 @@
+<resources>
+    <item name="control_device_management" type="id" />
+    <item name="control_device_row" type="id" />
+    <item name="control_current_device_badge" type="id" />
+    <item name="control_rename_device" type="id" />
+    <item name="control_delete_device" type="id" />
+</resources>

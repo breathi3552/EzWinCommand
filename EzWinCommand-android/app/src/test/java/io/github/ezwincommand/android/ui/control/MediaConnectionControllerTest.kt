@@ -29,7 +29,7 @@ class MediaConnectionControllerTest {
                 snapshots++
                 return ApiResult.Success(MediaState.LOADING.copy(revision = snapshots.toLong()))
             }
-            override fun openMediaEvents(sinceRevision: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+            override fun openMediaEvents(sinceRevision: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit): Closeable {
                 since += sinceRevision
                 onEvent(MediaState.LOADING.copy(revision = sinceRevision + 100))
                 onClosed(MediaEventTermination.Eof)
@@ -59,7 +59,7 @@ class MediaConnectionControllerTest {
         lateinit var controller: MediaConnectionController
         val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
             override suspend fun getMediaState(): ApiResult<MediaState> = ApiResult.Success(MediaState.LOADING.copy(revision = ++snapshots))
-            override fun openMediaEvents(sinceRevision: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+            override fun openMediaEvents(sinceRevision: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit): Closeable {
                 since += sinceRevision
                 onClosed(terminations.removeFirst())
                 return Closeable { }
@@ -77,13 +77,36 @@ class MediaConnectionControllerTest {
     }
 
     @Test
+    fun `sse onOpen triggers authoritative refresh`() = runTest {
+        var refreshes = 0
+        val applied = mutableListOf<Long>()
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
+            override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 1))
+            override suspend fun refreshMediaState(): ApiResult<MediaState> {
+                refreshes++
+                return ApiResult.Success(MediaState.LOADING.copy(revision = 2))
+            }
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit): Closeable {
+                onOpen()
+                return Closeable { }
+            }
+        }
+        val controller = MediaConnectionController(client, "http://127.0.0.1:8080", this, StandardTestDispatcher(testScheduler), { applied += it.revision }, { _, _ -> }, {}, {})
+        controller.start("owner")
+        runCurrent()
+        assertEquals(1, refreshes)
+        assertEquals(listOf(1L, 2L), applied)
+        controller.close()
+    }
+
+    @Test
     fun `401 snapshot stops without events and invokes auth once on main dispatcher`() = runTest {
         var opened = false
         var authCalls = 0
         val dispatcher = StandardTestDispatcher(testScheduler)
         val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
             override suspend fun getMediaState(): ApiResult<MediaState> = ApiResult.HttpError(401, "授权失效")
-            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit): Closeable {
                 opened = true
                 return Closeable { }
             }
@@ -104,7 +127,7 @@ class MediaConnectionControllerTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
             override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 1, cover = "/api/media/cover/same"))
-            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit): Closeable {
                 eventCallbacks += onEvent
                 closedCallbacks += onClosed
                 return Closeable { onClosed(MediaEventTermination.ClosedByCaller) }
@@ -131,7 +154,7 @@ class MediaConnectionControllerTest {
         val delays = mutableListOf<Long>()
         val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
             override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 1, cover = "/cover/a"))
-            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit) = Closeable { }
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit) = Closeable { }
             override suspend fun getMediaCover(path: String): ApiResult<ByteArray> {
                 attempts++
                 return if (attempts < 3) ApiResult.HttpError(404, "missing") else ApiResult.Success(byteArrayOf(7))
@@ -160,7 +183,7 @@ class MediaConnectionControllerTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
             override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 1, cover = "/cover/old"))
-            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit): Closeable {
                 events += onEvent
                 return Closeable { }
             }
@@ -197,7 +220,7 @@ class MediaConnectionControllerTest {
         val applied = mutableListOf<MediaState>()
         val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
             override suspend fun getMediaState() = ApiResult.Success(MediaState.LOADING.copy(revision = 2, error = null))
-            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit): Closeable {
+            override fun openMediaEvents(since: Long, onEvent: (MediaState) -> Unit, onClosed: (MediaEventTermination) -> Unit, onOpen: () -> Unit): Closeable {
                 events += onEvent
                 return Closeable { }
             }

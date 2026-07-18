@@ -1,258 +1,132 @@
-"""鉴权中间件与配对码管理。
-
-AuthManager 负责设备配对生命周期：生成配对码、验证尝试、锁定防爆破。
-create_auth_middleware 工厂函数生成 ASGI 中间件，拦截 /api/* 路径进行 Bearer 鉴权。
-"""
+"""线程安全的 HTTP 鉴权与一次性配对状态机。"""
+from __future__ import annotations
+import hashlib
+import logging
+import re
 import secrets
 import time
-import hashlib
-from typing import Optional
-
+from threading import RLock
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-
-# ---- 配对码常量 ----
-_CODE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+logger = logging.getLogger(__name__)
 _CODE_LENGTH = 4
+_PAIRING_TTL = 300
 _MAX_FAILED_ATTEMPTS = 5
-_LOCK_DURATION = 30  # 秒
+_LOCK_DURATION = 30
+_TERMINAL_RETENTION = 60
+_PUBLIC_GET_PATHS = frozenset({"/ping", "/api/identity", "/api/local/pairings"})
+_PAIRING_COMPLETE_PATH = re.compile(r"/api/pairings/[^/]+/complete\Z")
+_PAIRING_CANCEL_PATH = re.compile(r"/api/pairings/[^/]+\Z")
 
-# ---- 鉴权白名单路径 ----
-_WHITELIST_PATHS = frozenset({
-    "/ping",
-    "/api/authorize",
-    "/api/pairing-code",
-    "/api/pairing-code/refresh",
-})
 
+def _is_anonymous_request(method: str, path: str) -> bool:
+    if method == "GET":
+        return path in _PUBLIC_GET_PATHS
+    if method == "POST":
+        return path == "/api/pairings" or _PAIRING_COMPLETE_PATH.fullmatch(path) is not None
+    return method == "DELETE" and _PAIRING_CANCEL_PATH.fullmatch(path) is not None
 
 def is_local_host(host: str) -> bool:
-    """判断 ASGI client host 是否为本机。"""
     return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost", "testclient"}
 
-
 class AuthManager:
-    """设备配对鉴权管理器。
-
-    管理配对码生命周期、设备密钥验证、失败锁定。
-    所有设备持久化委托给 DeviceStore。
-    """
-
-    def __init__(self, store) -> None:
-        """初始化 AuthManager。
-
-        Args:
-            store: DeviceStore 实例，负责设备持久化。
-        """
+    def __init__(self, store, server_id: str = "") -> None:
         self._store = store
-        self._pairing_code: Optional[str] = None
-        self._code_expires_at: float = 0.0
-        self._failed_attempts: int = 0
-        self._lock_until: float = 0.0
+        self._server_id = server_id
+        self._pairings: dict[str, dict] = {}
+        self._pairings_lock = RLock()
 
-    # ---- 配对码管理 ----
+    def create_pairing(self, device_name: str = "Android") -> dict:
+        with self._pairings_lock:
+            pairing_id = secrets.token_urlsafe(16)
+            now = time.time()
+            self._pairings[pairing_id] = {
+                "pairing_id": pairing_id, "server_id": self._server_id,
+                "device_name": device_name, "code": "".join(secrets.choice("0123456789") for _ in range(4)),
+                "created_at": now, "expires_at": now + _PAIRING_TTL,
+                "failed_attempts": 0, "lock_until": 0.0, "terminal_at": None, "status": "pending",
+            }
+            return {"pairing_id": pairing_id, "server_id": self._server_id, "expires_in": _PAIRING_TTL}
 
-    def _generate_code(self) -> None:
-        """从 0-9a-z 字符集中随机生成 4 位配对码。
+    def list_pairings(self, include_code: bool = False) -> list[dict]:
+        with self._pairings_lock:
+            now = time.time()
+            rows = []
+            purge = []
+            for pairing_id, p in self._pairings.items():
+                if p["status"] in {"pending", "locked"} and now >= p["expires_at"]:
+                    p["status"] = "expired"; p["terminal_at"] = now; p["code"] = ""
+                elif p["status"] == "locked" and now >= p["lock_until"]:
+                    p["status"] = "pending"; p["failed_attempts"] = 0; p["lock_until"] = 0.0
+                if p["status"] in {"consumed", "cancelled", "expired"} and now - (p["terminal_at"] or now) >= _TERMINAL_RETENTION:
+                    purge.append(pairing_id); continue
+                row = {
+                    "pairing_id": p["pairing_id"], "server_id": p["server_id"],
+                    "device_name": p["device_name"], "status": p["status"],
+                    "expires_in": max(0, int(p["expires_at"] - now)),
+                    "remaining_attempts": max(0, _MAX_FAILED_ATTEMPTS - p["failed_attempts"]),
+                    "locked_until": p["lock_until"] if p["status"] == "locked" else None,
+                }
+                if include_code and p["status"] in {"pending", "locked"}: row["code"] = p["code"]
+                rows.append(row)
+            for pairing_id in purge: self._pairings.pop(pairing_id, None)
+            return sorted(rows, key=lambda row: (row["status"] not in {"pending", "locked"}, -next(p["created_at"] for p in self._pairings.values() if p["pairing_id"] == row["pairing_id"])))
 
-        使用 secrets 模块以保证加密安全性。
-        同时重置失败计数和锁定状态，设置 5 分钟过期时间。
-        """
-        self._pairing_code = "".join(
-            secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH)
-        )
-        self._failed_attempts = 0
-        self._lock_until = 0.0
-        self._code_expires_at = time.time() + 300
+    def complete_pairing(self, server_id: str, pairing_id: str, code: str, device_name: str) -> str | None:
+        if len(code) != 4 or not code.isascii() or not code.isdigit(): return None
+        with self._pairings_lock:
+            p = self._pairings.get(pairing_id); now = time.time()
+            if not p or p["server_id"] != server_id or p["status"] not in {"pending", "locked"}: return None
+            if now >= p["expires_at"]: p["status"] = "expired"; p["terminal_at"] = now; p["code"] = ""; return None
+            if now < p["lock_until"]: p["status"] = "locked"; return None
+            if p["status"] == "locked": p["status"] = "pending"; p["failed_attempts"] = 0; p["lock_until"] = 0.0
+            if not secrets.compare_digest(code, p["code"]):
+                p["failed_attempts"] += 1
+                if p["failed_attempts"] >= _MAX_FAILED_ATTEMPTS:
+                    p["lock_until"] = now + _LOCK_DURATION; p["status"] = "locked"
+                return None
+            try:
+                key = self._store.add_device(device_name or p["device_name"])
+            except Exception:
+                logger.exception("配对设备落盘失败")
+                return None
+            p["status"] = "consumed"; p["terminal_at"] = now; p["code"] = ""
+            return key
 
-    def get_pairing_code(self) -> Optional[str]:
-        """返回当前有效配对码；无配对码或已过期时返回 None。"""
-        self._expire_code_if_needed()
-        return self._pairing_code
-
-    def get_pairing_code_expires_in(self) -> int:
-        """返回当前配对码剩余有效秒数。"""
-        self._expire_code_if_needed()
-        if self._pairing_code is None:
-            return 0
-        return max(0, int(self._code_expires_at - time.time()))
-
-    def _expire_code_if_needed(self) -> None:
-        """配对码过期时清空状态。"""
-        if self._pairing_code is not None and time.time() > self._code_expires_at:
-            self._pairing_code = None
-
-    def generate_new_code(self) -> str:
-        """强制生成新配对码，并重置失败计数和锁定状态。
-
-        Returns:
-            新生成的配对码字符串。
-        """
-        self._generate_code()
-        return self._pairing_code  # type: ignore[return-value]
-
-    # ---- 配对验证 ----
-
-    def try_pair(self, code: str, device_name: str) -> Optional[str]:
-        """尝试验证配对码并注册设备。
-
-        验证逻辑：
-        1. 若配对码已过期 → 置空并返回 None
-        2. 若当前无配对码 → 返回 None
-        3. 若处于锁定状态（lock_until > 当前时间）→ 返回 None
-        4. 配对码不匹配 → 累加失败计数，达到阈值则锁定 30 秒，返回 None
-        5. 配对码匹配 → 重置状态，invalidate 配对码，调用 store.add_device(name)，返回设备密钥
-
-        Args:
-            code: 用户输入的配对码。
-            device_name: 设备名称。
-
-        Returns:
-            成功时返回设备 UUID 密钥字符串，失败返回 None。
-        """
-        self._expire_code_if_needed()
-        if self._pairing_code is None:
-            return None
-
-        now = time.time()
-        if self._lock_until > now:
-            return None
-
-        if code != self._pairing_code:
-            self._failed_attempts += 1
-            if self._failed_attempts >= _MAX_FAILED_ATTEMPTS:
-                self._lock_until = now + _LOCK_DURATION
-            return None
-
-        # 配对成功：重置状态，invalidate 配对码，注册设备
-        self._failed_attempts = 0
-        self._lock_until = 0.0
-        self._pairing_code = None
-
-        return self._store.add_device(device_name)
-
-    # ---- 鉴权检查 ----
+    def cancel_pairing(self, pairing_id: str) -> bool:
+        with self._pairings_lock:
+            p = self._pairings.get(pairing_id)
+            if not p or p["status"] not in {"pending", "locked"}: return False
+            p["status"] = "cancelled"; p["terminal_at"] = time.time(); p["code"] = ""; return True
 
     def is_authorized(self, key: str) -> bool:
-        """检查设备密钥是否已授权，同时更新活跃时间。
-
-        Args:
-            key: 设备 UUID 密钥。
-
-        Returns:
-            True 表示密钥有效。
-        """
-        authorized = self._store.is_authorized(key)
-        if authorized:
-            self._store.touch(key)
-        return authorized
-
-    # ---- 透明委托 ----
-
-    def touch(self, key: str) -> None:
-        """更新设备活跃时间。"""
-        self._store.touch(key)
-
-    def list_devices(self) -> list[dict]:
-        """列出所有已注册设备。"""
-        return self._store.list_devices()
-
-    def has_devices(self) -> bool:
-        """检查是否至少有一台已授权设备。"""
-        return self._store.has_any_device()
-
-    def remove_device(self, key: str) -> bool:
-        """移除设备。
-
-        Returns:
-            True 表示删除成功。
-        """
-        return self._store.remove_device(key)
-
-    def rename_device(self, key: str, name: str) -> bool:
-        """重命名设备。
-
-        Returns:
-            True 表示重命名成功，False 表示设备不存在。
-        """
-        return self._store.rename_device(key, name)
-
-
-# ---- FastAPI 中间件 ----
+        ok = self._store.is_authorized(key)
+        if ok: self._store.touch(key)
+        return ok
+    def touch(self, key: str) -> None: self._store.touch(key)
+    def list_devices(self) -> list[dict]: return self._store.list_devices()
+    def has_devices(self) -> bool: return self._store.has_any_device()
+    def remove_device(self, key: str) -> bool: return self._store.remove_device(key)
+    def rename_device(self, key: str, name: str) -> bool: return self._store.rename_device(key, name)
 
 def create_auth_middleware(auth_manager: AuthManager):
-    """创建 ASGI 鉴权中间件工厂。
-
-    返回一个可调用的类，供 FastAPI/Starlette 的 add_middleware() 使用。
-    白名单路径（/ping, /api/authorize, /api/pairing-code）直接放行；
-    localhost / TestClient 请求直接放行，供 PC 管理面板使用；
-    非 /api/ 前缀路径（静态文件）放行；
-    其余 /api/* 路径需携带有效的 Authorization: Bearer <key> 头。
-
-    用法：app.add_middleware(create_auth_middleware(auth_manager))
-
-    Args:
-        auth_manager: AuthManager 实例。
-
-    Returns:
-        可用于 add_middleware 的中间件类。
-    """
-
     class _AuthMiddleware:
-        """ASGI 鉴权中间件。"""
-
-        def __init__(self, app: ASGIApp) -> None:
-            self._app = app
-
+        def __init__(self, app: ASGIApp) -> None: self._app = app
         async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-            if scope["type"] != "http":
-                # 非 HTTP 请求（如 WebSocket）直接放行
-                await self._app(scope, receive, send)
-                return
-
-            path: str = scope.get("path", "")
-            method: str = scope.get("method", "")
-
-            # OPTIONS 预检请求放行（CORS 支持）
-            if method == "OPTIONS":
-                await self._app(scope, receive, send)
-                return
-
-            # 白名单路径放行
-            if path in _WHITELIST_PATHS:
-                await self._app(scope, receive, send)
-                return
-            # localhost 请求放行，并注入固定内部 owner 摘要
-            client_host = (scope.get("client") or ("", 0))[0]
-            if is_local_host(client_host):
+            if scope["type"] != "http": return await self._app(scope, receive, send)
+            path, method = scope.get("path", ""), scope.get("method", "")
+            if method == "OPTIONS" or _is_anonymous_request(method, path) or not path.startswith("/api/"):
+                return await self._app(scope, receive, send)
+            host = (scope.get("client") or ("", 0))[0]
+            if is_local_host(host):
                 scope.setdefault("state", {})["device_digest"] = hashlib.sha256(b"ezwincommand:loopback").hexdigest()
-                await self._app(scope, receive, send)
-                return
-
-            # 非 /api/ 前缀放行（静态文件等）
-            if not path.startswith("/api/"):
-                await self._app(scope, receive, send)
-                return
-
-            # /api/* 路径需鉴权
-            request = Request(scope, receive)
-            auth_header = request.headers.get("Authorization", "")
-
-            if not auth_header.startswith("Bearer "):
-                response = JSONResponse(
-                    status_code=401,
-                    content={"detail": "缺少 Authorization: Bearer <key> 头"},
-                )
-                await response(scope, receive, send)
-                return
-            key = auth_header[7:]
-            if not auth_manager.is_authorized(key):
-                response = JSONResponse(status_code=401, content={"detail": "未授权的设备密钥"})
-                await response(scope, receive, send)
-                return
-            scope.setdefault("state", {})["device_digest"] = hashlib.sha256(key.encode()).hexdigest()
+                return await self._app(scope, receive, send)
+            request = Request(scope, receive); header = request.headers.get("Authorization", "")
+            if not header.startswith("Bearer ") or not auth_manager.is_authorized(header[7:]):
+                response = JSONResponse(status_code=401, content={"detail": "未授权"})
+                return await response(scope, receive, send)
+            scope.setdefault("state", {})["device_digest"] = hashlib.sha256(header[7:].encode()).hexdigest()
             await self._app(scope, receive, send)
-
     return _AuthMiddleware
