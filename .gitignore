@@ -38,6 +38,10 @@ EzWinCommand-server/agent/server_identity.json
 # 当前产品与长期测试资料纳入版本控制；历史过程归档保持本地
 docs/*
 !docs/README.md
+!docs/product-contract.md
+!docs/protocol-contract.md
+!docs/acceptance-coverage.md
+!docs/changelog.md
 !docs/product/
 !docs/product/**
 !docs/tests/

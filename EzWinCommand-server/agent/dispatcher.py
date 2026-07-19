@@ -71,7 +71,7 @@ class Dispatcher:
         """分发命令到对应插件。
 
         Args:
-            action: 插件注册名（如 "calculator", "media"）。
+            action: 插件注册名（如 "esports_mode", "media"）。
             params: 插件所需的参数字典。
 
         Returns:

@@ -260,9 +260,13 @@ def test_actions_clean_cutover_and_sse_replay_framing() -> None:
         media = [item for item in actions if item["name"] == "media"]
         assert len(media) == 1
         assert [item["id"] for item in media[0]["sub_actions"]] == ["play_pause", "prev", "next"]
-        assert all(item["name"] not in {"player", "volume"} for item in actions)
+        assert all(item["name"] not in {"calculator", "player", "volume"} for item in actions)
         assert client.patch("/api/plugins/player", json={"enabled": True}).status_code == 404
         assert client.patch("/api/plugins/volume", json={"enabled": True}).status_code == 404
+        assert client.patch("/api/plugins/calculator", json={"enabled": True}).status_code == 404
+        removed = client.post("/api/command", json={"action": "calculator", "params": {}})
+        assert removed.status_code == 200
+        assert removed.json() == {"success": False, "message": "未知命令: calculator", "data": None}
 
         service._publish(replace(service.snapshot(), volume=38))
         hub = client.app.state.media_event_hub

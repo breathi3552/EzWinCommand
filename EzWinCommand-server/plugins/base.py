@@ -63,7 +63,7 @@ class BasePlugin(ABC):
             - description（可选）: 子操作说明
             - params_schema（可选）: 子操作参数字段描述
 
-        返回空列表表示该插件是简单触发型（如 calculator）。
+        返回空列表表示该插件是简单触发型。
         """
         return []
 

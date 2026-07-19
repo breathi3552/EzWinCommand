@@ -64,8 +64,9 @@ def test_dispatcher_clean_cutover_has_one_media_and_no_legacy(tmp_path: Path) ->
     dispatcher.register_plugin(MediaPlugin(StubService()))
     names = [item["name"] for item in dispatcher.list_plugins()]
     assert names.count("media") == 1
-    assert "player" not in names and "volume" not in names
+    assert all(name not in names for name in {"calculator", "player", "volume"})
     media = next(item for item in dispatcher.list_actions() if item["name"] == "media")
     assert [item["id"] for item in media["sub_actions"]] == ["play_pause", "prev", "next"]
     assert dispatcher.execute("player", {}).success is False
     assert dispatcher.execute("volume", {}).success is False
+    assert dispatcher.execute("calculator", {}).success is False
