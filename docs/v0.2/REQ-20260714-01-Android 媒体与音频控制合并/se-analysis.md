@@ -93,3 +93,47 @@ G-R2-01=PASS
 - 第三轮真实 Server→Android 复测关闭原始 P0：连续 state 采样 `available=true,error=null`，Android 控制页无初始化超时；Server targeted tests 27 passed，Android targeted BUILD SUCCESSFUL。
 - 尚未完整验收：V-02/V-03/V-04 未执行；V-07 为 Manual pending；V-01 未注入可控慢命令；V-06 的 SSE 内容更新及自动恢复未完整验证。
 - 当前总体状态保持“部分 E2E 通过，未完整验收；Manual pending”。
+
+## Spotify 多会话修复状态同步（2026-07-15）
+
+- REQ-20260714-01-01 Windows：Automated Pass（S-01~S-06、28 tests、compileall）；真实多会话/暂停同步/三键通过；封面 `cover=null` blocking；Android 命令闭环 Manual pending。
+- REQ-20260714-01-02 Android：标题/艺术家已观察，完整命令闭环 Manual pending。
+- 旧 18080 固定端口问题为环境错配，已撤回，不计入当前产品问题。
+- 总体：代码待提交；验收未完成；Manual pending。
+***
+## COVER-MTA 修复状态（2026-07-16）
+
+- 模块级预载 `comtypes`；EzMediaLoop 在线程内显式 `COINIT_MULTITHREADED` init/uninit，失败初始化不误反初始化；manager token 逐项回滚。
+- COVER-MTA 子任务：Automated 已完成；Reviewer 复审 PASS with notes；T-003 服务端封面阻塞已关闭。
+- 真实 Evidence：服务 PID 32752；B站 title 正常、volume=56、5 render、8 capture；cover URL 非空、HTTP 200、`image/png` 20945 bytes 且可解码；播放/音量往返命令 success；日志无 `RPC_E_CHANGED_MODE`/COM/Traceback/ERROR/异常/失败。
+- Android 封面页面实际显示未由用户确认，V-04 保持 **Manual pending**；总体不得叙述为已完成/已可用。
+
+## R5 事件驱动媒体与 Android UI 重构（2026-07-16）
+
+### 增量契约与文件清单
+
+- `request_refresh(domains) -> Future[MediaState]` 合并 dirty，按 devices→audio→media→artwork 执行并不等待 artwork；`POST /api/media/refresh` 保持 Bearer 边界，成功返回 `MediaState`，不可用返回 503 短错。
+- 原子 SSE 在 event loop 内先注册 queue 再取得 snapshot/replay；Windows callback 仅 thread-safe 标记 dirty，并由 `EzMediaLoop` MTA 线程持有/释放。
+- Artwork identity 为 `(source_app_user_model_id,title,artist)+generation`，切歌先发布 `cover=null`，同 generation 只读一次；Android onOpen、STARTED/恢复、媒体/音量/设备命令后主动 refresh，旧 generation 不得回写。
+- Android UI 使用编程式 View：深色 Material BottomSheetDialog、FrameLayout 固定 Header、top-end 设备浮层 rename/delete 与删除确认。涉及 `media/service.py`、`agent/api.py`、Android `EzApiClient.kt`/`MediaConnectionController.kt`/`MainActivity.kt`/`ControlScreen.kt`、资源与定向测试；不修改 `activity_control.xml`、docs 以外代码范围及 `.omp`。
+
+### R5 验证与子任务状态
+
+- Server 定向测试 45 passed；受控 `/ping`、state、refresh 均 200，空闲 10 秒 revision 4→4 且无重复媒体读取；Android `testDebugUnitTest assembleDebug` BUILD SUCCESSFUL。
+- emulator-5554 已安装启动并实际显示媒体卡；BottomSheet 已实际打开。R5-AND-001 首轮 Blocking/P1 已关闭：独立 Robolectric 测试验证实际 Activity/root attach、`isAttachedToWindow`、入口 `VISIBLE`、`contentDescription/clickable/focusable`，祖先 `VISIBLE` 且非 `NO_HIDE_DESCENDANTS`。
+- 子任务 REQ-20260714-01-01、REQ-20260714-01-02：Automated Pass；Windows callback/真实设备浮层 rename/delete、TalkBack、当前设备删除与导航均 Manual pending。
+
+### R5 完成叙事
+
+| 栏 | 状态 |
+|---|---|
+| Automated | Server 45 passed；受控 API/idle revision 证据；Android 单测、assembleDebug 与 emulator 媒体卡/BottomSheet 路径通过。 |
+| Manual | Windows callback/真实播放音量、设备浮层 rename/delete、TalkBack、当前设备删除确认与导航：**Manual pending**；BottomSheet 已打开。 |
+| 非目标 | Web、formatter、lint、项目级全套测试、commit/push。 |
+***
+
+## R6 最终增量与状态（2026-07-16）
+
+- 子任务 01 已完成：Core Audio callback QueryInterface 与注册/注销使用同 pointer；endpoint 重绑定先注册新后注销旧；volume callback 仅标记 audio dirty。真实受控 launch port 18937 两轮通过：80→65→80（revision 4→5，媒体不变）；Focusrite→INZONE→Focusrite，INZONE 音量 60，最终恢复 80（revision 5→8→9），无“读取音频状态失败”或“Interface not supported”。
+- 子任务 02 已完成 Automated/UI Evidence：Popup 实测 `control_device_row`、本机 chip、rename/delete `ImageButton`，无按钮文本，触控区 126px；Android View/testDebugUnitTest/assembleDebug 成功。重命名/删除提交与 TalkBack 仍为 Manual pending。
+- R6 验证矩阵：Server 三媒体回归 47 passed/3 warnings；callback 专项 2 passed；Windows 两项真实通过；Android Popup Evidence 通过。总体不再保留 R6 Windows Manual pending。

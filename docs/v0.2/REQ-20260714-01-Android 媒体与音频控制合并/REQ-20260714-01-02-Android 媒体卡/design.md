@@ -44,3 +44,26 @@
 本轮最终设计清单共 11 个文件；本子任务负责 7 个 Android 文件：`EzApiClient.kt`、`ControlController.kt`、`MediaConnectionController.kt`、`MainActivity.kt` 及对应 `EzApiClientTest.kt`、`ControlControllerTest.kt`、`MediaConnectionControllerTest.kt`。实现显式 close、媒体 scope/SSE 取消、封面有限退避重试及 generation/path 隔离。
 
 Android targeted BUILD SUCCESSFUL；V-04 未执行；V-07 Manual pending。真实 Server→Android 第三轮媒体状态路径部分通过，SSE 内容更新及自动恢复未完整验证。
+
+## 封面遗留风险归档（2026-07-16）
+
+- Windows STA `open_read_async` 挂起导致真实封面仍不可验收；显式 MTA 探针可取得 Spotify 128272-byte PNG、Edge/B站 25046-byte PNG。
+- Android 完整命令闭环保持 **Manual pending**，本轮不修改代码。
+
+## COVER-MTA 依赖状态（2026-07-16）
+
+- Android 不改代码；继续消费既有 cover URL。
+- Windows 服务端 T-003 阻塞已关闭，真实 cover URL 200 且图片可解码；Android 页面实际显示未由用户确认，保持 **Manual pending**。
+
+## R5 事件驱动媒体与 UI 重构同步（2026-07-16）
+
+- `EzApiClient.kt`/`MediaConnectionController.kt` 增加 onOpen、生命周期与命令后 refresh；`ControlScreen.kt` 使用固定 Header、深色 BottomSheetDialog 及设备浮层 rename/delete；封面以 generation 隔离旧任务。
+- Android `testDebugUnitTest assembleDebug` BUILD SUCCESSFUL；emulator-5554 实际显示媒体卡且 BottomSheet 已打开。
+- R5-AND-001 已关闭：独立 Robolectric 测试验证实际 Activity/root attach、`isAttachedToWindow`、入口 VISIBLE 与 contentDescription/clickable/focusable，祖先 VISIBLE 且非 NO_HIDE_DESCENDANTS。真实设备浮层 rename/delete、TalkBack、当前设备删除导航仍 Manual pending。
+***
+
+## R6 设备 Popup UI 证据（2026-07-16）
+
+- Popup 通过 `content-desc=设备管理` 实际打开；uiautomator 观察 `control_device_row`、本机 chip，以及 rename/delete `android.widget.ImageButton`。
+- 两个图标按钮无按钮文本，触控区均 126px（≥48dp）；emulator-5554 为 `device`，Debug APK 安装启动成功。
+- MediaControlScreenViewTest、`testDebugUnitTest`、`assembleDebug` 均成功。重命名/删除提交与 TalkBack 保留 Manual pending。

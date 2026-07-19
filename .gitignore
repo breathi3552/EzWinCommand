@@ -23,16 +23,36 @@ Thumbs.db
 
 # 本地配置（首次运行自动创建，不纳入版本控制）
 EzWinCommand-server/config.local.env
-# 项目配置与文档（本地开发资料，不纳入版本控制）
-.omp/
+# 本机 Server 身份（包含私钥）
+EzWinCommand-server/agent/server_identity.json
+# OMP 工作流定义纳入版本控制；运行证据和本地辅助文件保持忽略
+.omp/*
+!.omp/AGENTS.md
+!.omp/RULES.md
+!.omp/agents/
+!.omp/agents/**
+!.omp/skills/
+!.omp/skills/**
 .agent/
-docs/
+
+# 当前产品与长期测试资料纳入版本控制；历史过程归档保持本地
+docs/*
+!docs/README.md
+!docs/product/
+!docs/product/**
+!docs/tests/
+!docs/tests/**
+!docs/versions/
+!docs/versions/**
 
 
 # 设备鉴权数据（运行时生成，包含本机配对 Key）
 **/agent/devices.json
 **/agent/plugins.json
 **/agent/command_tasks.json
+
+# 本地发布打包产物
+EzWinCommand-v*.zip
 icon-candidates/
 # 测试产物
 test_screenshots/

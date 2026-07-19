@@ -17,9 +17,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("EZWIN_RELEASE_KEYSTORE")
+                ?: error("EZWIN_RELEASE_KEYSTORE is not set")
+            storeFile = file(keystorePath)
+            storePassword = System.getenv("EZWIN_RELEASE_STORE_PASSWORD")
+                ?: error("EZWIN_RELEASE_STORE_PASSWORD is not set")
+            keyAlias = "ezwincommand-release"
+            keyPassword = System.getenv("EZWIN_RELEASE_KEY_PASSWORD")
+                ?: error("EZWIN_RELEASE_KEY_PASSWORD is not set")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

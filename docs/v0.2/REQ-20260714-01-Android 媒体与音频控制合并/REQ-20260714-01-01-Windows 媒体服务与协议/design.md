@@ -52,3 +52,35 @@ INS.TAIL:
 | `EzWinCommand-server/tests/test_media_service.py` | 修改：持续失败重建、单域瞬时失败不重建、封面缓存覆盖 |
 
 Server targeted tests：27 passed。真实 Windows adapter 故障注入 V-02/V-03 未执行；V-07 Manual pending。
+
+## Spotify 多会话选择修复同步（2026-07-15）
+
+本轮最终实现涉及 `EzWinCommand-server/media/service.py` 与 `EzWinCommand-server/tests/test_media_service.py`：枚举 GSMTC sessions，按 PLAYING 优先、已选稳定性、Windows current、稳定 source id 选择；状态、封面和三键命令共用 selected 引用；事件订阅与 token 在重绑/close 时完整清理。HTTP、JSON、SSE、`MediaService.submit` 与 Android schema 不变。
+
+自动化验证：S-01~S-06 行为覆盖通过，Server 测试共 28 passed；`python -m compileall media/service.py tests/test_media_service.py` exit 0。
+
+真实 E2E：随机端口、单 worker、无 reload 环境下 Server 多会话选择、暂停同步、三键目标与 token close 通过。旧固定端口 18080 命中旧实例属于环境错配，已撤回，不计为当前产品问题。真实 Spotify 封面仍出现 `cover=null`，thumbnail task 无结果，保持 blocking；Android 完整命令闭环为 Manual pending。
+
+## 封面遗留风险归档（2026-07-16）
+
+- T-003：STA 服务中的 `open_read_async` 挂起；显式 MTA 探针可取得 Spotify 128272-byte PNG、Edge/B站 25046-byte PNG。
+- 状态：遗留风险/下一轮立即修复；本轮仅记录，不修改产品代码。
+- Android 完整命令闭环保持 Manual pending。
+
+## COVER-MTA 修复同步（2026-07-16）
+
+- 模块级主线程预载 `comtypes`；EzMediaLoop 显式 MTA init/uninit，失败初始化不误反初始化；manager token 逐项回滚。
+- T-003 服务端封面阻塞已关闭。真实 Evidence：PID 32752，B站 title、volume=56、5 render、8 capture；cover URL HTTP 200 `image/png` 20945 bytes 可解码；播放与音量往返 success；日志无 COM/RPC_E_CHANGED_MODE/Traceback/ERROR/异常/失败。
+- Reviewer 复审 PASS with notes；Automated 41 passed。Android 封面显示仍 Manual pending。
+
+## R5 事件驱动媒体与 UI 重构同步（2026-07-16）
+
+- `media/service.py` 增量实现 dirty 合并、`request_refresh(domains)`、artwork identity/generation 与 MTA callback 生命周期；`agent/api.py` 增加 Bearer refresh API 和原子 SSE 注册。
+- Server 定向测试 45 passed；受控 refresh 200，空闲 revision 4→4 且无重复读取。Windows 真实 callback 与播放/音量命令仍 Manual pending。
+***
+
+## R6 callback 重绑定设计与验证（2026-07-16）
+
+- callback 通过 `QueryInterface` 获取的 pointer 在注册与注销阶段保持同一 identity；endpoint 替换顺序固定为先注册新 callback、再注销旧 callback；volume callback 只标记 audio dirty，不触发 media read。
+- 自动化：Server 三媒体回归 47 passed/3 warnings；callback 专项 2 passed。
+- 真实 Windows：受控 launch `127.0.0.1:18937`。第一轮 Focusrite 音量 80→65→80，revision 4→5 且媒体字段不变；第二轮 Focusrite→INZONE→Focusrite，INZONE 音量 60，最终恢复 80，revision 5→8→9；无“读取音频状态失败”或“Interface not supported”，服务已 stop。

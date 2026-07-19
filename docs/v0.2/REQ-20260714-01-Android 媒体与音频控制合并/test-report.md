@@ -101,3 +101,107 @@ Automated 覆盖 snapshot→SSE 与退避、generation/Main/page gate、SSE fram
 - Manual：V-MAN-01/02 真实 Windows GSMTC/Core Audio 与晚恢复仍为 **Manual pending**，未冒充通过。
 - 非目标：本轮不改生产代码，仅补充测试；不执行 formatter、lint、项目级全套测试，不污染 README，不 push。
 - R1 根因/契约：旧媒体 readiness `TimeoutError` 穿透 lifespan 导致 uvicorn 退出；R1 废弃该阻断契约，保留后台 bootstrap 并允许晚恢复。
+
+## Spotify 多会话修复追加报告（2026-07-15）
+
+### Automated
+- Server S-01~S-06 通过；测试 28 passed；`python -m compileall media/service.py tests/test_media_service.py` exit 0。
+- 真实随机端口、单 worker、无 reload：Spotify/Bilibili 多会话选择、暂停同步、三键目标通过。
+
+### Manual
+- Android 标题/艺术家与初始按钮语义已观察；完整命令闭环 **Manual pending**。
+
+### 非目标
+- 旧固定端口 18080 为环境错配并已撤回；不计为产品问题。未执行测试、formatter、lint、commit/push。
+
+### Blocking
+- 真实 Spotify 封面持续 `cover=null`，thumbnail task 无成功结果；需修复后复测，当前未关闭。
+
+### 结论
+- 代码待提交；验收未完成；Manual pending。
+
+## 2026-07-16 封面遗留风险归档
+
+### Automated
+- 本次仅归档文档，未运行测试；既有 Server/Android 自动化证据保持原记录。
+- 现场证据：Spotify 128272-byte PNG、Edge/B站 25046-byte PNG 均可由显式 MTA 探针取得；当前 STA 服务的 `open_read_async` 挂起。
+
+### Manual
+- Android 完整命令闭环：**Manual pending**。
+
+### 非目标
+- 不修改产品代码、测试、README、`.omp`；不运行 formatter、lint、测试、git commit/push。docs 仅本地归档，未获提交授权。
+
+### 结论
+- T-003 改列为遗留风险/下一轮立即修复；用户仅授权本次 `COMMIT_CODE` 两份代码文件还原点提交例外，不代表业务验收完成。
+
+## 2026-07-16 COVER-MTA 修复追加
+
+### Automated
+- Automated：41 passed，3 warnings，13.87s；Reviewer 复审 PASS with notes。
+- COVER-MTA：模块级主线程预载 `comtypes`；EzMediaLoop 显式 MTA init/uninit；manager token 逐项回滚；T-003 服务端封面阻塞关闭。
+
+### 真实 Evidence
+- 服务 PID 32752；B站 title 正常、volume=56、5 render、8 capture。
+- cover URL 非空，HTTP 200，`image/png` 20945 bytes，可解码。
+- 播放 `playing→paused→playing`，两次命令 success；音量 `56→55→56`，命令 success。
+- 日志筛查无 `RPC_E_CHANGED_MODE`、COM、Traceback、ERROR、异常、失败。
+
+### Manual
+- Android 页面实际封面显示未经用户确认，精确状态：**Manual pending**。
+
+### 非目标
+- 不修改 HTTP/JSON/SSE 或 Android UI；docs 未获提交授权；不运行 formatter/lint/测试/git；不 commit/push。
+
+### 结论
+- T-003 服务端封面阻塞已关闭；Android 封面显示仍 Manual pending，本需求未宣称已完成/已可用。
+
+## R5 事件驱动媒体与 Android UI 重构（2026-07-16）
+
+### Automated
+
+- Server：`tests/test_media_service.py`、`test_media_api.py`、`test_media_plugin.py` 定向测试 45 passed，3 warnings。
+- 受控服务：`/ping`、state、`POST /api/media/refresh` 均 200；空闲 10 秒 revision 4→4，日志无重复媒体读取。
+- Android：`testDebugUnitTest assembleDebug` BUILD SUCCESSFUL；emulator-5554 实际显示媒体卡，BottomSheet 已实际打开。
+- R5-AND-001 已关闭：独立 Robolectric 测试在实际 Activity/root attach 层级验证 `isAttachedToWindow`、`VISIBLE`、入口 `contentDescription/clickable/focusable`，祖先均 `VISIBLE` 且非 `NO_HIDE_DESCENDANTS`；指定测试和 assembleDebug 成功。
+
+### Manual
+
+- Windows GSMTC/Core Audio callback 与真实播放/音量命令、真实设备浮层 rename/delete、TalkBack、当前设备删除确认与导航：**Manual pending**。
+- BottomSheet 已实际打开，不属于 Manual pending。
+
+### 非目标
+
+- Web、formatter、lint、项目级全套测试、commit/push。
+
+### 结论
+
+Automated Pass；无未关闭 Automated blocking 问题；整体仍 Manual pending，不宣称已完成或已可用。
+***
+
+## R6 最终真实验证（2026-07-16）
+
+### Automated
+
+- Server 三媒体回归：`python -m pytest -q tests/test_media_service.py tests/test_media_api.py tests/test_media_plugin.py`，**47 passed，3 warnings**。
+- callback 专项：2 passed；覆盖 QueryInterface 同 pointer、先注册新 endpoint 后注销旧 endpoint，以及 volume callback 仅 audio dirty。
+- Android MediaControlScreenViewTest、`testDebugUnitTest`、`assembleDebug`：BUILD SUCCESSFUL。
+
+### Android Evidence
+
+- emulator-5554 为 `device`；通过 `content-desc=设备管理` 实际打开 Popup，观察到 `control_device_row`、本机 chip、rename/delete `ImageButton`；无按钮文本，触控区 126px。
+- Manual 仅重命名/删除提交与 TalkBack：Manual pending。
+
+### Windows Evidence（R6，真实 Pass）
+
+- 受控 launch `127.0.0.1:18937`。第一轮默认 Focusrite：音量 80→65→80，revision 4→5，媒体字段不变。
+- 第二轮 Focusrite→INZONE→Focusrite：INZONE 音量 60，最终恢复 Focusrite 音量 80，revision 5→8→9；无“读取音频状态失败”或“Interface not supported”，服务已 stop。
+- R6-AUDIO-REBIND 与 R6-VOLUME-PUSH 均真实 Pass；R5 旧记录中的 Windows Manual pending 仅代表 R5 当时未执行状态，不适用于 R6。
+
+### 非目标
+
+Web、formatter、lint、项目级全套测试、commit/push；不修改代码/README/.omp。
+
+### 结论
+
+R6 自动化、Windows 两项真实闭环及 Android Popup Evidence 通过；无未关闭 blocking。Android 重命名/删除提交与 TalkBack 仍 Manual pending。

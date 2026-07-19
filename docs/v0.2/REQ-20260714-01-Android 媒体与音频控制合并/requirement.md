@@ -5,11 +5,9 @@
 - **流程**: Full
 - **变更类型**: protocol | platform | behavior
 - **USER_DEFECT**: yes
-- **R3 状态**: 部分 E2E 通过，未完整验收；Manual pending
-- **R3 用户缺陷**: 用户反馈“媒体插件经常失效”；原始媒体服务初始化超时已由真实 Server→Android 第三轮复测关闭。
-- **R3 验证**: Server targeted tests 27 passed；Android targeted BUILD SUCCESSFUL；V-02/V-03/V-04 未执行；V-07 Manual pending。
-- **Reviewer**: R3 代码审查通过（以本轮审查报告为准）；整体仍 Manual pending
-- **Tester**: 第三轮真实 Server→Android 路径部分通过；SSE 内容更新及自动恢复未完整验证
+- **R4 COVER-MTA 状态**：Windows 封面服务端修复已完成并通过 Reviewer 复审（PASS with notes）；Automated 41 passed；Android 页面实际显示仍 **Manual pending**，不得表述为需求已完成/已可用。
+- **R4 真实证据**：服务 PID 32752；B站 title 正常、volume=56、5 render、8 capture；cover URL 非空并 HTTP 200，`image/png` 20945 bytes 且可解码；播放 `playing→paused→playing` 两次命令 success；音量 `56→55→56` 命令 success；日志无 `RPC_E_CHANGED_MODE`/COM/Traceback/ERROR/异常/失败。
+- **Reviewer/Tester**：Reviewer 复审 PASS with notes；Automated 41 passed（3 warnings，13.87s）；Android UI 封面显示未获用户确认，保持 Manual pending。
 
 ## 原始需求
 
@@ -39,15 +37,25 @@
 - [x] README 已记录 Android 完整媒体卡、固定依赖和 Web 管理后台 TODO。
 - [x] `.omp/RULES.md` 已固化短错、traceback/非敏感上下文和敏感信息禁记规范。
 - [x] 两个子任务的 design/test-records 与最终代码和测试状态同步。
-- [ ] V-MAN-01..05 Windows/Android 真机与无障碍验证：Manual pending。
+- [x] V-R6 Windows Core Audio callback 重绑定与 volume-only callback 真实验证通过；Android Popup 设备行与图标按钮自动化/实机证据通过。
+- [ ] Android 重命名/删除提交与 TalkBack 手动验收：Manual pending。
 
-## 完成叙事
+## R6 最终增量（2026-07-16）
+
+- UI：设备 row、本机 chip、rename/delete ImageButton（无按钮文本，触控区 126px）已在 emulator-5554 Popup 实测。
+- Core Audio：callback QueryInterface 与注册/注销使用同 pointer；先注册新 endpoint 后注销旧 endpoint；volume callback 仅标记 audio dirty。
+- Automated：Server 三媒体回归 **47 passed，3 warnings**；callback 专项 2 passed；Android View/testDebugUnitTest/assembleDebug BUILD SUCCESSFUL。
+- Windows 真实受控 launch port 18937：第一轮音量 80→65→80、revision 4→5、媒体不变；第二轮 Focusrite→INZONE→Focusrite，INZONE 音量 60，最终恢复 80，revision 5→8→9；无“读取音频状态失败”或“Interface not supported”，服务已 stop。
+
+## R6 完成叙事
 
 | 栏 | 状态 |
 |---|---|
-| Automated | R2 Server/API 20 passed；Android Media 测试通过；`assembleDebug` 成功；emulator-5554 UI 路径通过。 |
-| Manual | 真实 Windows GSMTC/Core Audio：**Manual pending**。 |
-| 非目标 | 真实 Windows 控制未验收；Web 完整媒体卡、formatter、lint、项目级全套测试、docs 提交、commit/push 均非本轮范围。 |
+| Automated | Server 47 passed/3 warnings；callback 2 passed；Android View、testDebugUnitTest、assembleDebug 成功；Popup 真实观察到本机 chip 与 126px 图标按钮。 |
+| Manual | 仅 Android 重命名/删除提交与 TalkBack：Manual pending；Windows 两项真实 callback/音量闭环均 Pass。 |
+| 非目标 | Web、formatter、lint、项目级全套测试、commit/push；不改代码以外范围。 |
+
+总体状态：R6 Windows 与 Automated 通过；Android 仅重命名/删除提交与 TalkBack 为 Manual pending。
  
 ## R3 问题发现与修复过程
 
@@ -68,3 +76,29 @@
 - **Supersession**：R1 废弃“媒体初始化超时则整个服务启动失败”及向 lifespan 穿透 readiness `TimeoutError` 的契约；后台 bootstrap 晚完成后同进程恢复。
 - **本轮代码范围**：生产代码未修改；仅修改 `EzWinCommand-server/tests/test_media_service.py` 与 `EzWinCommand-server/tests/test_media_api.py` 的验证覆盖。
 - **完成条件**：R1 V-START-01/02/03/04/05/06 Automated Pass；Reviewer-2 PASS；V-MAN-01/02 真实 GSMTC/Core Audio 仍为 **Manual pending**。
+
+## COVER-MTA 修复归档（2026-07-16）
+
+- 模块级预载 `comtypes`；`EzMediaLoop` 在线程内显式 `COINIT_MULTITHREADED` init/uninit，初始化失败不误反初始化；manager token 逐项保存并在部分失败时逐项回滚。
+- T-003 服务端封面阻塞已关闭：真实服务 PID 32752，B站 title 正常、volume=56、5 render、8 capture；cover URL 非空，HTTP 200，`image/png` 20945 bytes 且可解码；播放与音量往返命令均 success。
+- Reviewer 复审 PASS with notes；Automated 41 passed，3 warnings，13.87s；日志筛查无 `RPC_E_CHANGED_MODE`/COM/Traceback/ERROR/异常/失败。
+- Android 页面实际封面显示未由用户确认，保持 **Manual pending**；本需求不得写作“已完成/已可用”。docs 未获提交授权。
+
+完成条件更新：Windows 服务端封面与命令/音量证据 ✓；Android 完整命令及页面封面显示 ✗（Manual pending）。
+
+## R5 事件驱动媒体与 Android UI 重构（2026-07-16）
+
+- 服务端事件驱动 dirty 合并、`POST /api/media/refresh`、原子 SSE snapshot、Windows callback 生命周期及 artwork generation 已实现；Android onOpen/生命周期与命令后 refresh、封面 generation、BottomSheet、固定 Header 和设备浮层已同步。
+- R5-AND-001 首轮 Blocking/P1 已关闭：独立 Robolectric `MediaControlScreenViewTest` 在实际 Activity/root 层级验证入口已 attach（`isAttachedToWindow`）、`VISIBLE`，入口 `contentDescription/clickable/focusable`，且祖先均 `VISIBLE`、无 `NO_HIDE_DESCENDANTS`；指定测试与 `assembleDebug` 成功。
+- R5 自动化与真实证据：Server 45 passed；受控 `/ping`/state/refresh 200，空闲 10 秒 revision 4→4 且无重复读取；Android `testDebugUnitTest assembleDebug` 成功；emulator-5554 实际显示媒体卡且 BottomSheet 已打开。
+
+### R5 完成叙事
+
+| 栏 | 状态 |
+|---|---|
+| Automated | Server 45 passed；受控 API refresh 200、空闲 revision 4→4、无重复读取；Android 单测与 assembleDebug 成功；R5-AND-001 自动化关闭。 |
+| Manual | Windows callback/播放音量真实操作、真实设备浮层 rename/delete、TalkBack、当前设备删除确认与导航：**Manual pending**；BottomSheet 已实际打开，不属于 pending。 |
+| 非目标 | Web、formatter、lint、项目级全套测试、commit/push。 |
+
+总体状态：Automated Pass；Manual pending。不得表述为整体已完成或已可用。
+***
