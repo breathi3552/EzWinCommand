@@ -5,6 +5,7 @@ import logging
 import re
 import secrets
 import time
+from collections.abc import Callable
 from threading import RLock
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -16,7 +17,7 @@ _PAIRING_TTL = 300
 _MAX_FAILED_ATTEMPTS = 5
 _LOCK_DURATION = 30
 _TERMINAL_RETENTION = 60
-_PUBLIC_GET_PATHS = frozenset({"/ping", "/api/identity", "/api/local/pairings"})
+_PUBLIC_GET_PATHS = frozenset({"/ping", "/api/identity", "/api/local/pairings", "/api/local/events"})
 _PAIRING_COMPLETE_PATH = re.compile(r"/api/pairings/[^/]+/complete\Z")
 _PAIRING_CANCEL_PATH = re.compile(r"/api/pairings/[^/]+\Z")
 
@@ -37,6 +38,14 @@ class AuthManager:
         self._server_id = server_id
         self._pairings: dict[str, dict] = {}
         self._pairings_lock = RLock()
+        self._change_listener: Callable[[frozenset[str]], None] | None = None
+
+    def set_change_listener(self, listener: Callable[[frozenset[str]], None] | None) -> None:
+        self._change_listener = listener
+
+    def _notify(self, *domains: str) -> None:
+        if self._change_listener is not None:
+            self._change_listener(frozenset(domains))
 
     def create_pairing(self, device_name: str = "Android") -> dict:
         with self._pairings_lock:
@@ -48,20 +57,23 @@ class AuthManager:
                 "created_at": now, "expires_at": now + _PAIRING_TTL,
                 "failed_attempts": 0, "lock_until": 0.0, "terminal_at": None, "status": "pending",
             }
-            return {"pairing_id": pairing_id, "server_id": self._server_id, "expires_in": _PAIRING_TTL}
+            result = {"pairing_id": pairing_id, "server_id": self._server_id, "expires_in": _PAIRING_TTL}
+        self._notify("pairings")
+        return result
 
     def list_pairings(self, include_code: bool = False) -> list[dict]:
+        changed = False
         with self._pairings_lock:
             now = time.time()
             rows = []
             purge = []
             for pairing_id, p in self._pairings.items():
                 if p["status"] in {"pending", "locked"} and now >= p["expires_at"]:
-                    p["status"] = "expired"; p["terminal_at"] = now; p["code"] = ""
+                    p["status"] = "expired"; p["terminal_at"] = now; p["code"] = ""; changed = True
                 elif p["status"] == "locked" and now >= p["lock_until"]:
-                    p["status"] = "pending"; p["failed_attempts"] = 0; p["lock_until"] = 0.0
+                    p["status"] = "pending"; p["failed_attempts"] = 0; p["lock_until"] = 0.0; changed = True
                 if p["status"] in {"consumed", "cancelled", "expired"} and now - (p["terminal_at"] or now) >= _TERMINAL_RETENTION:
-                    purge.append(pairing_id); continue
+                    purge.append(pairing_id); changed = True; continue
                 row = {
                     "pairing_id": p["pairing_id"], "server_id": p["server_id"],
                     "device_name": p["device_name"], "status": p["status"],
@@ -72,34 +84,50 @@ class AuthManager:
                 if include_code and p["status"] in {"pending", "locked"}: row["code"] = p["code"]
                 rows.append(row)
             for pairing_id in purge: self._pairings.pop(pairing_id, None)
-            return sorted(rows, key=lambda row: (row["status"] not in {"pending", "locked"}, -next(p["created_at"] for p in self._pairings.values() if p["pairing_id"] == row["pairing_id"])))
+            rows.sort(key=lambda row: (row["status"] not in {"pending", "locked"}, -next(p["created_at"] for p in self._pairings.values() if p["pairing_id"] == row["pairing_id"])))
+        if changed:
+            self._notify("pairings")
+        return rows
 
     def complete_pairing(self, server_id: str, pairing_id: str, code: str, device_name: str) -> str | None:
         if len(code) != 4 or not code.isascii() or not code.isdigit(): return None
+        changed = False
+        domains: tuple[str, ...] = ()
+        key: str | None = None
         with self._pairings_lock:
             p = self._pairings.get(pairing_id); now = time.time()
             if not p or p["server_id"] != server_id or p["status"] not in {"pending", "locked"}: return None
-            if now >= p["expires_at"]: p["status"] = "expired"; p["terminal_at"] = now; p["code"] = ""; return None
-            if now < p["lock_until"]: p["status"] = "locked"; return None
-            if p["status"] == "locked": p["status"] = "pending"; p["failed_attempts"] = 0; p["lock_until"] = 0.0
-            if not secrets.compare_digest(code, p["code"]):
-                p["failed_attempts"] += 1
-                if p["failed_attempts"] >= _MAX_FAILED_ATTEMPTS:
-                    p["lock_until"] = now + _LOCK_DURATION; p["status"] = "locked"
-                return None
-            try:
-                key = self._store.add_device(device_name or p["device_name"])
-            except Exception:
-                logger.exception("配对设备落盘失败")
-                return None
-            p["status"] = "consumed"; p["terminal_at"] = now; p["code"] = ""
-            return key
+            if now >= p["expires_at"]:
+                p["status"] = "expired"; p["terminal_at"] = now; p["code"] = ""; changed = True
+            elif now < p["lock_until"]:
+                if p["status"] != "locked": p["status"] = "locked"; changed = True
+            else:
+                if p["status"] == "locked": p["status"] = "pending"; p["failed_attempts"] = 0; p["lock_until"] = 0.0; changed = True
+                if not secrets.compare_digest(code, p["code"]):
+                    p["failed_attempts"] += 1; changed = True
+                    if p["failed_attempts"] >= _MAX_FAILED_ATTEMPTS:
+                        p["lock_until"] = now + _LOCK_DURATION; p["status"] = "locked"
+                else:
+                    try:
+                        key = self._store.add_device(device_name or p["device_name"])
+                    except Exception:
+                        logger.exception("配对设备落盘失败")
+                    if key is not None:
+                        p["status"] = "consumed"; p["terminal_at"] = now; p["code"] = ""
+                        changed = True; domains = ("pairings", "devices")
+        if domains:
+            self._notify(*domains)
+        elif changed:
+            self._notify("pairings")
+        return key
 
     def cancel_pairing(self, pairing_id: str) -> bool:
         with self._pairings_lock:
             p = self._pairings.get(pairing_id)
             if not p or p["status"] not in {"pending", "locked"}: return False
-            p["status"] = "cancelled"; p["terminal_at"] = time.time(); p["code"] = ""; return True
+            p["status"] = "cancelled"; p["terminal_at"] = time.time(); p["code"] = ""
+        self._notify("pairings")
+        return True
 
     def is_authorized(self, key: str) -> bool:
         ok = self._store.is_authorized(key)
@@ -108,8 +136,14 @@ class AuthManager:
     def touch(self, key: str) -> None: self._store.touch(key)
     def list_devices(self) -> list[dict]: return self._store.list_devices()
     def has_devices(self) -> bool: return self._store.has_any_device()
-    def remove_device(self, key: str) -> bool: return self._store.remove_device(key)
-    def rename_device(self, key: str, name: str) -> bool: return self._store.rename_device(key, name)
+    def remove_device(self, key: str) -> bool:
+        changed = self._store.remove_device(key)
+        if changed: self._notify("devices")
+        return changed
+    def rename_device(self, key: str, name: str) -> bool:
+        changed = self._store.rename_device(key, name)
+        if changed: self._notify("devices")
+        return changed
 
 def create_auth_middleware(auth_manager: AuthManager):
     class _AuthMiddleware:

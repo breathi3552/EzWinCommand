@@ -6,6 +6,7 @@
 |---|---|---|---|
 | TC-PAIR-001 | PAIR-01/02 配对生命周期 | Server interface | `EzWinCommand-server/tests/test_pairing_lifecycle.py` |
 | TC-AUTH-001 | AUTH-01/02 鉴权、撤销与流终止 | Server interface | `EzWinCommand-server/tests/test_pairing_lifecycle.py` |
+| TC-WEB-LOCAL-001 | PAIR-01/AUTH-04 本机管理事件、敏感边界与空闲无轮询 | Server interface/static contract | `EzWinCommand-server/tests/test_android_lan_contract.py` |
 | TC-CMD-001 | CMD-02/03 同步与异步命令 | Server interface | `EzWinCommand-server/tests/test_async_command.py` |
 | TC-MEDIA-001 | MEDIA-01/02/03 媒体状态、控制与事件 | Server unit/interface | `test_media_service.py`, `test_media_api.py`, `test_media_plugin.py` |
 | TC-AUDIO-001 | AUDIO-01 音量与设备 | Server unit/interface | `test_media_service.py`, `test_media_api.py` |

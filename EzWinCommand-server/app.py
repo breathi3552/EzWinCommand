@@ -11,7 +11,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from agent.api import MediaEventHub, router as api_router
+from agent.api import LocalEventHub, MediaEventHub, router as api_router
 from agent.auth import AuthManager, create_auth_middleware
 from agent.command_tasks import AsyncCommandService, CommandTaskStore
 from agent.device_store import DeviceStore
@@ -36,8 +36,12 @@ def create_app(media_service: MediaService | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        hub = MediaEventHub(service, asyncio.get_running_loop())
-        application.state.media_event_hub = hub
+        loop = asyncio.get_running_loop()
+        media_hub = MediaEventHub(service, loop)
+        local_hub = LocalEventHub(loop)
+        application.state.media_event_hub = media_hub
+        application.state.local_event_hub = local_hub
+        application.state.auth_manager.set_change_listener(local_hub.publish)
         try:
             service.start()
             # 发布失败仅隔离发现能力，HTTP 服务继续启动。
@@ -46,7 +50,9 @@ def create_app(media_service: MediaService | None = None) -> FastAPI:
         finally:
             # 先注销 mDNS，再停止媒体服务，避免退出时留下陈旧服务记录。
             await asyncio.to_thread(publisher.close)
-            hub.close()
+            application.state.auth_manager.set_change_listener(None)
+            local_hub.close()
+            media_hub.close()
             service.stop()
     application = FastAPI(title="EzWinCommand Server", lifespan=lifespan)
     dispatcher = Dispatcher(plugins_json_path=BASE_DIR / "agent" / "plugins.json")

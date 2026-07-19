@@ -131,6 +131,54 @@ class MediaEventHub:
 router = APIRouter()
 
 
+class LocalEventHub:
+    """向 localhost 管理页广播非敏感的状态失效通知。"""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.subscribers: set[asyncio.Queue[frozenset[str] | None]] = set()
+        self.closed = False
+
+    def publish(self, domains: frozenset[str]) -> None:
+        if self.closed or not domains:
+            return
+        self.loop.call_soon_threadsafe(self._accept, domains)
+
+    def _accept(self, domains: frozenset[str]) -> None:
+        if self.closed:
+            return
+        for queue in tuple(self.subscribers):
+            if queue.full():
+                try:
+                    domains |= queue.get_nowait() or frozenset()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(domains)
+
+    def close(self) -> None:
+        self.closed = True
+        for queue in tuple(self.subscribers):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(None)
+        self.subscribers.clear()
+    async def stream(self) -> AsyncIterator[str]:
+        queue: asyncio.Queue[frozenset[str] | None] = asyncio.Queue(maxsize=1)
+        self.subscribers.add(queue)
+        try:
+            while True:
+                domains = await queue.get()
+                if domains is None:
+                    return
+                data = json.dumps({"domains": sorted(domains)}, separators=(",", ":"))
+                yield f"event: changed\ndata: {data}\n\n"
+        finally:
+            self.subscribers.discard(queue)
+
+
 class CommandRequest(BaseModel):
     """命令执行请求体。"""
     action: str = Field(min_length=1, max_length=128)
@@ -365,6 +413,17 @@ async def local_pairings(request: Request):
     if not _is_local_client(request):
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     return {"pairings": _get_auth_manager(request).list_pairings(include_code=True)}
+
+
+@router.get("/api/local/events")
+async def local_events(request: Request):
+    if not _is_local_client(request):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    return StreamingResponse(
+        request.app.state.local_event_hub.stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/api/devices")

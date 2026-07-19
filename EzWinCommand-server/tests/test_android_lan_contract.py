@@ -212,15 +212,19 @@ def test_web_shell_revalidates_and_references_versioned_assets() -> None:
     assert "no-store" not in script.headers.get("cache-control", "")
 
 
-def test_pc_page_polls_local_pairings_without_remote_code_logic() -> None:
+def test_pc_page_uses_local_events_without_idle_polling() -> None:
     client = _make_client()
     page = client.get("/").text
     script = client.get("/static/app.js").text
 
     assert 'id="pc-pairing-area"' in page
     assert 'fetchJson("/api/local/pairings"' in script
-    assert "pcStartPolling();" in script
-    assert "PC_CODE_POLL_MS = 1000" in script
+    assert 'new EventSource("/api/local/events")' in script
+    assert 'addEventListener("open", pcRefreshSnapshots)' in script
+    assert "pcStartPolling" not in script
+    assert "PC_CODE_POLL_MS" not in script
+    assert "setInterval(extLoadDevices, DEVICE_POLL_MS)" in script  # 仅外部控制页保留
+    assert script.count("setInterval(extLoadDevices, DEVICE_POLL_MS)") == 1
     assert "has_code" not in script
     assert 'fetchJson("/api/devices")' in script
     assert 'fetchJson("/api/devices", {}, "pc-error")' not in script
@@ -228,10 +232,52 @@ def test_pc_page_polls_local_pairings_without_remote_code_logic() -> None:
     assert "pairing-empty" in script and "等待手机发起配对" in script
     assert "pairing-card" in script and "pairing-device-name" in script
     assert "pcPairingShortId(pairing.pairing_id)" in script
-    assert 'active && /^\\d{4}$/.test(code)' in script
+    assert "/^\\d{4}$/.test(code)" in script
     assert "pairing-code" in style and "font-size: 52px" in style
     assert 'id="ext-pairing"' not in page
     assert "#pc-pairing-code" not in style and "#pc-countdown" not in style
+
+
+def test_local_events_are_loopback_only_and_payload_is_non_sensitive() -> None:
+    import asyncio
+    from agent.api import LocalEventHub
+
+    async def scenario() -> str:
+        loop = asyncio.get_running_loop()
+        hub = LocalEventHub(loop)
+        stream = hub.stream()
+        pending = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0)
+        hub.publish(frozenset({"pairings", "devices"}))
+        frame = await asyncio.wait_for(pending, timeout=1)
+        await stream.aclose()
+        return frame
+
+    frame = asyncio.run(scenario())
+    assert frame == 'event: changed\ndata: {"domains":["devices","pairings"]}\n\n'
+    assert "code" not in frame and "device_key" not in frame
+
+    client = _make_client()
+    remote = _remote_request(client, "GET", "/api/local/events")
+    assert remote.status_code == 404
+
+
+def test_auth_manager_publishes_pairing_and_device_invalidations() -> None:
+    from agent.auth import AuthManager
+
+    store = _StubStore()
+    manager = AuthManager(store, server_id="server-1")
+    changes: list[frozenset[str]] = []
+    manager.set_change_listener(changes.append)
+
+    created = manager.create_pairing("Android Phone")
+    code = manager.list_pairings(include_code=True)[0]["code"]
+    assert manager.complete_pairing("server-1", created["pairing_id"], code, "Android Phone") == "device-abc123"
+    assert changes == [frozenset({"pairings"}), frozenset({"pairings", "devices"})]
+
+    assert manager.rename_device("device-abc123", "New Name")
+    assert manager.remove_device("device-abc123")
+    assert changes[-2:] == [frozenset({"devices"}), frozenset({"devices"})]
 
 
 def test_android_lan_command_accepts_valid_bearer() -> None:

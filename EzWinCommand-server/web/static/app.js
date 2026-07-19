@@ -3,9 +3,7 @@
 // ============================================================
 
 const DEVICE_KEY_STORAGE = "ez_device_key";
-const PC_CODE_POLL_MS = 1000;   // PC 端配对状态每秒轮询
-const COUNTDOWN_TICK_MS = 1000;  // 倒计时每秒更新
-const DEVICE_POLL_MS = 30000;    // 设备列表轮询间隔
+const DEVICE_POLL_MS = 30000;    // 外部设备列表轮询间隔
 
 // ============================================================
 // 工具函数
@@ -213,7 +211,8 @@ async function submitAndTrackCommand(action, params = {}, opts = {}) {
 // PC 管理面板
 // ============================================================
 
-let pcPollTimer = null;
+let pcEventSource = null;
+let pcPairingExpiryTimer = null;
 async function pcFetchPairings() { return fetchJson("/api/local/pairings", {}, "pc-error"); }
 function pcPairingStatus(status) {
     return {
@@ -233,6 +232,8 @@ function pcPairingShortId(pairingId) {
 function pcRenderPairings(data) {
     const root = document.getElementById("pc-pairing-list");
     if (!root) return;
+    clearTimeout(pcPairingExpiryTimer);
+    pcPairingExpiryTimer = null;
     root.replaceChildren();
     const pairings = ((data && Array.isArray(data.pairings)) ? data.pairings : [])
         .filter(pairing => pairing.status === "pending" || pairing.status === "locked");
@@ -243,6 +244,8 @@ function pcRenderPairings(data) {
         root.appendChild(empty);
         return;
     }
+    const nextExpiry = Math.min(...pairings.map(pairing => Math.max(0, Number(pairing.expires_in) || 0)));
+    pcPairingExpiryTimer = setTimeout(pcRefreshPairings, (nextExpiry + 1) * 1000);
 
     for (const pairing of pairings) {
         const card = document.createElement("article");
@@ -283,11 +286,27 @@ function pcRenderPairings(data) {
     }
 }
 async function pcRefreshPairings() { pcRenderPairings(await pcFetchPairings()); }
-function pcStartPolling() {
-    pcStopPolling(); pcRefreshPairings();
-    pcPollTimer = setInterval(pcRefreshPairings, PC_CODE_POLL_MS);
+
+function pcRefreshSnapshots() {
+    pcRefreshPairings();
+    pcLoadDevices();
 }
-function pcStopPolling() { clearInterval(pcPollTimer); pcPollTimer = null; }
+
+function pcStartEvents() {
+    if (pcEventSource) pcEventSource.close();
+    pcEventSource = new EventSource("/api/local/events");
+    pcEventSource.addEventListener("open", pcRefreshSnapshots);
+    pcEventSource.addEventListener("changed", event => {
+        try {
+            const domains = JSON.parse(event.data).domains || [];
+            if (domains.includes("pairings")) pcRefreshPairings();
+            if (domains.includes("devices")) pcLoadDevices();
+        } catch (error) {
+            console.error("管理事件解析失败:", error);
+            pcRefreshSnapshots();
+        }
+    });
+}
 
 // ---- PC 设备管理 ----
 
@@ -426,11 +445,7 @@ async function pcRevokeDevice(key, rowEl) {
             method: "DELETE",
         }, "pc-error");
         if (data.success) {
-            rowEl.remove();
-            const tbody = document.getElementById("pc-device-tbody");
-            if (tbody.children.length === 0) {
-                document.getElementById("pc-device-empty").style.display = "";
-            }
+            pcLoadDevices();
         } else {
             setUiError("pc-error", data.message || "撤销设备失败");
         }
@@ -463,11 +478,7 @@ async function initPCPanel() {
     document.getElementById("pc-panel").style.display = "";
 
     document.getElementById("pc-refresh-btn").addEventListener("click", pcRefreshPairings);
-    pcStartPolling();
-
-    // 加载设备列表
-    pcLoadDevices();
-    setInterval(pcLoadDevices, DEVICE_POLL_MS);
+    pcStartEvents();
 
     // 加载操作按钮
     pcLoadActions();
