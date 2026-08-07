@@ -4,8 +4,8 @@
 
 ### 新增
 
-- 新增 `OLED 护屏` 插件，Android 提供进入护屏和恢复显示两个图标操作。
-- 使用 Windows 原生显示器电源消息关闭或恢复显示器，不调用 DDC/CI、Sleep/Hibernate 或输入设备监听。
+- 新增 `OLED 护屏` 插件，Android 仅提供与电竞模式一致的矩形“进入护屏”按钮。
+- 点击后启动一次性 60 秒定时器；键盘或鼠标 Raw Input 会取消定时器和监听，定时器到期后使用 Windows 原生 `SC_MONITORPOWER` 关闭显示器。
 
 ## 2026-07-19
 

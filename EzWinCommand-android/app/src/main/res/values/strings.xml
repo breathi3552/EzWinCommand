@@ -103,5 +103,4 @@
     <string name="media_cover_unavailable">未检测到正在播放的媒体</string>
     <string name="media_refresh">刷新媒体状态</string>
     <string name="oled_saver_enter">进入护屏</string>
-    <string name="oled_saver_restore">恢复显示</string>
 </resources>

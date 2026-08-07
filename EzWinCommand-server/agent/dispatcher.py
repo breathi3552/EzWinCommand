@@ -67,6 +67,16 @@ class Dispatcher:
     def register_plugin(self, plugin: BasePlugin) -> None:
         """注册依赖注入的插件，不写入启用状态文件。"""
         self._loader.register(plugin)
+    def close(self) -> None:
+        """关闭插件持有的后台资源。"""
+        for plugin in self._loader.plugins.values():
+            close = getattr(plugin, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception:
+                logger.exception("关闭插件资源失败: plugin=%s", plugin.name)
     def execute(self, action: str, params: dict[str, Any] | None = None) -> CommandResult:
         """分发命令到对应插件。
 

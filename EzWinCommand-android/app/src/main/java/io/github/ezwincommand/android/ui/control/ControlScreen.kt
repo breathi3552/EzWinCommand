@@ -47,16 +47,6 @@ internal fun mediaButtonSpecs(available: Boolean, playback: MediaPlayback): List
     MediaButtonSpec("play_pause", if (playback == MediaPlayback.PLAYING) R.drawable.ic_media_pause_24 else R.drawable.ic_media_play_24, if (!available) R.string.media_play_pause_disabled else if (playback == MediaPlayback.PLAYING) R.string.media_pause else R.string.media_play, 56, available),
     MediaButtonSpec("next", R.drawable.ic_media_next_24, if (available) R.string.media_next else R.string.media_next_disabled, 48, available),
 )
-internal data class OledButtonSpec(
-    val subAction: String,
-    val icon: Int,
-    val contentDescription: Int,
-)
-
-internal fun oledButtonSpecs(): List<OledButtonSpec> = listOf(
-    OledButtonSpec("turn_off", R.drawable.ic_display_off_24, R.string.oled_saver_enter),
-    OledButtonSpec("turn_on", R.drawable.ic_display_on_24, R.string.oled_saver_restore),
-)
 
 
 
@@ -67,7 +57,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     private var mediaArtist: TextView? = null
     private var mediaStatus: TextView? = null
     private var mediaButtons: List<AppCompatImageButton> = emptyList()
-    private var oledButtons: List<AppCompatImageButton> = emptyList()
+    private var oledActionButton: Button? = null
 
     private var outputSelector: Button? = null
     private var inputSelector: Button? = null
@@ -113,7 +103,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     internal fun mediaSelectorsForTest(): Pair<Button?, Button?> = outputSelector to inputSelector
     internal fun devicesPopupForTest(): PopupWindow? = devicesPopup
     internal fun deleteDialogForTest(): AlertDialog? = deleteDialog
-    internal fun oledButtonsForTest(): List<AppCompatImageButton> = oledButtons
+    internal fun oledActionButtonForTest(): Button? = oledActionButton
 
 
     fun updateMediaStateExcludingVolume(ready: ControlUiState.Ready) {
@@ -161,7 +151,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
 
     internal fun renderActions(actions: List<ActionPlugin>, state: ControlUiState, onAction: (ActionCommand) -> Unit, onBack: () -> Unit) {
         actionsContainer.removeAllViews()
-        oledButtons = emptyList()
+        oledActionButton = null
         if (actions.isEmpty()) { actionsContainer.addView(emptyView(context.getString(R.string.control_no_actions)), verticalParams(dp(12))); return }
         actions.forEach { plugin ->
             val card = when (plugin.name) {
@@ -174,23 +164,16 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     }
 
     private fun oledSaverCard(plugin: ActionPlugin, onAction: (ActionCommand) -> Unit): LinearLayout {
-        val grid = GridLayout(context).apply { columnCount = 2 }
-        val buttons = oledButtonSpecs()
-            .filter { spec -> plugin.subActions.any { it.id == spec.subAction } }
-            .map { spec ->
-                mediaButton(spec.icon, spec.contentDescription, true) {
-                    onAction(ActionCommand(plugin.name, mapOf("sub_action" to spec.subAction)))
-                }.apply {
-                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-                    isFocusable = true
-                    minimumWidth = dp(56)
-                    minimumHeight = dp(56)
-                }.also { button -> grid.addView(button, gridParams()) }
-            }
-        oledButtons = buttons
         return panel().apply {
             addView(singleLine(plugin.label, 15f, true))
-            addView(grid, verticalParams(dp(12)))
+            val action = plugin.subActions.firstOrNull { it.id == "turn_off" }
+            if (action != null) {
+                val button = primaryButton(context.getString(R.string.oled_saver_enter)) {
+                    onAction(ActionCommand(plugin.name, mapOf("sub_action" to action.id)))
+                }
+                oledActionButton = button
+                addView(button, verticalParams(dp(12)))
+            }
         }
     }
 

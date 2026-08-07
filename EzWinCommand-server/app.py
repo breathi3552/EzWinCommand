@@ -48,11 +48,12 @@ def create_app(media_service: MediaService | None = None) -> FastAPI:
             await asyncio.to_thread(publisher.start)
             yield
         finally:
-            # 先注销 mDNS，再停止媒体服务，避免退出时留下陈旧服务记录。
+            # 先注销 mDNS，再停止护屏监听和媒体服务，避免退出时遗留后台资源。
             await asyncio.to_thread(publisher.close)
             application.state.auth_manager.set_change_listener(None)
             local_hub.close()
             media_hub.close()
+            dispatcher.close()
             service.stop()
     application = FastAPI(title="EzWinCommand Server", lifespan=lifespan)
     dispatcher = Dispatcher(plugins_json_path=BASE_DIR / "agent" / "plugins.json")

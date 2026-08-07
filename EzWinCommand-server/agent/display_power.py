@@ -1,7 +1,7 @@
 """Windows 原生显示器电源控制。
 
-该模块只发送 ``SC_MONITORPOWER`` 系统消息，不调用 Sleep/Hibernate、DDC/CI
-或输入设备 API。Windows 的显示器电源管理负责后续的唤醒行为。
+该模块只发送 ``SC_MONITORPOWER`` 系统消息，不调用 Sleep/Hibernate 或
+DDC/CI。Windows 的显示器电源管理负责后续的唤醒行为。
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ WM_SYSCOMMAND = 0x0112
 SC_MONITORPOWER = 0xF170
 SMTO_ABORTIFHUNG = 0x0002
 MONITOR_POWER_OFF = 2
-MONITOR_POWER_ON = -1
 _SEND_TIMEOUT_MS = 1000
 _DWORD_PTR = ctypes.c_size_t
 
@@ -76,13 +75,10 @@ class DisplayPower(Protocol):
         """请求关闭显示器。"""
         ...
 
-    def turn_on(self) -> bool:
-        """请求恢复显示器。"""
-        ...
 
 
 class DisplayPowerController:
-    """提供关闭和恢复显示器的最小接口。"""
+    """提供关闭活动显示器的最小接口。"""
 
     def __init__(self, send_message: Callable[[int], bool] | None = None) -> None:
         self._send_message: Callable[[int], bool] = send_message or _send_monitor_power_message
@@ -90,7 +86,3 @@ class DisplayPowerController:
     def turn_off(self) -> bool:
         """请求 Windows 关闭活动显示器。"""
         return self._send_message(MONITOR_POWER_OFF)
-
-    def turn_on(self) -> bool:
-        """请求 Windows 恢复显示器。"""
-        return self._send_message(MONITOR_POWER_ON)
