@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 
 
 class OledSaverPlugin(BasePlugin):
-    """启动一次性延时护屏流程，不改变其他系统运行状态。"""
+    """启动循环护屏流程，不改变其他系统运行状态。"""
 
     name: str = "oled_saver"
     label: str = "OLED 护屏"
-    description: str = "等待 60 秒后关闭显示器，键盘或鼠标输入会取消护屏"
-    version: str = "1.1.0"
+    description: str = "先显示 5 秒倒计时，关屏后在显示器重新亮起时循环等待 60 秒"
+    version: str = "1.2.0"
 
     def __init__(self, controller: DisplayProtection | None = None) -> None:
         self.controller: DisplayProtection = controller or DisplayProtectionController()
@@ -40,7 +40,7 @@ class OledSaverPlugin(BasePlugin):
         if not success:
             logger.error("OLED 护屏启动失败")
             return CommandResult(False, "护屏操作失败")
-        return CommandResult(True, "已启动护屏，60 秒后关闭显示器")
+        return CommandResult(True, "已启动护屏，5 秒后关闭显示器")
 
     def close(self) -> None:
         """释放本插件的定时器和 Raw Input 监听。"""

@@ -16,7 +16,7 @@
 | 音频设备控制 | 没有活动媒体时音量和输入、输出设备仍可控制；平台回调只更新相关状态且设备切换后继续有效 | Server unit/interface + Windows environment | 替身覆盖接口；真实 Core Audio 设备、角色与 callback 重绑定仍需环境验证 |
 | 电竞模式进入与退出 | 进入按受控顺序执行并在首个失败处停止；退出恢复音频并只关闭受管进程，不结束游戏平台 | Server unit + Windows environment | 自动化覆盖顺序与失败停止；YY、Steam、CS2 和真实音频设备的完整链路待环境验证 |
 | Windows 生命周期集成 | 托盘、防火墙、自启和退出行为在当前登录用户会话内一致，提权或外部命令失败可诊断且不伪成功 | Windows environment | 普通替身测试不能替代 UAC、防火墙、登录启动和托盘交互验证 |
-| OLED 护屏与输入取消 | 用户点击后只启动一次性 60 秒定时器；定时器到期只关闭显示器一次；关屏前后的键盘、鼠标 Raw Input 都会取消当前流程；不使用 Sleep/Hibernate，Server 重启不主动改变显示器状态 | Server unit/interface + Android UI + Windows environment | Automated：Server 单测覆盖 60 秒定时器、输入取消、重复点击、关闭清理、键鼠设备声明和插件单动作；Android JVM 覆盖单一矩形进入按钮。Manual — 待人工验证：真实显示器黑屏/原生输入唤醒，以及 Android 真机/模拟器跨端交互。 |
+| OLED 护屏与输入取消 | 用户点击后显示 5 秒倒计时并关闭显示器；显示器重新亮起后启动 60 秒倒计时并可无限循环；任意键盘 Key Down 或倒计时窗口“取消”按钮结束整个流程，鼠标移动和普通点击不取消；不使用 Sleep/Hibernate，Server 重启不主动改变显示器状态 | Server unit/interface + Android UI + Windows environment | Automated：Server 单测覆盖状态机循环、5/60 秒定时器、键盘 Key Down 去重、鼠标忽略、取消按钮、显示器电源通知去重、重复点击和关闭清理；Android JVM 覆盖单一矩形进入按钮。Automated Windows smoke：Raw Input、显示器电源通知和 Win32 倒计时窗口启动/停止及控制器资源清理成功。Manual — 待人工验证：真实显示器黑屏/亮起、键盘/鼠标唤醒差异、多显示器行为，以及 Android 真机/模拟器跨端交互。 |
 
 ## 证据规则
 

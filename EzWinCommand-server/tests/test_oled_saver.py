@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import ctypes
 from pathlib import Path
 from types import SimpleNamespace
 
 from agent import display_power, display_protection
 from agent.display_power import DisplayPowerController
 from agent.display_protection import (
-    DISPLAY_PROTECTION_DELAY_SECONDS,
+    INITIAL_PROTECTION_DELAY_SECONDS,
+    REPROTECTION_DELAY_SECONDS,
     DisplayProtectionController,
     WindowsRawInputMonitor,
 )
@@ -62,11 +64,11 @@ class FakeRawInputMonitor:
         self.start_count = 0
         self.stop_count = 0
         self.active = False
-        self._on_input = None
+        self._on_key_down = None
 
-    def start(self, on_input) -> bool:
+    def start(self, on_key_down) -> bool:
         self.start_count += 1
-        self._on_input = on_input
+        self._on_key_down = on_key_down
         self.active = self.start_result
         return self.start_result
 
@@ -75,10 +77,13 @@ class FakeRawInputMonitor:
         self.active = False
         return True
 
-    def emit_input(self) -> None:
-        callback = self._on_input
+    def emit_key_down(self) -> None:
+        callback = self._on_key_down
         if callback is not None:
             callback()
+
+    def emit_mouse(self) -> None:
+        """鼠标 Raw Input 不应触发护屏取消。"""
 
 
 class RetryingRawInputMonitor(FakeRawInputMonitor):
@@ -89,6 +94,67 @@ class RetryingRawInputMonitor(FakeRawInputMonitor):
     def stop(self) -> bool:
         super().stop()
         return next(self._stop_results)
+
+
+class FakeDisplayPowerMonitor:
+    def __init__(self, start_result: bool = True) -> None:
+        self.start_result = start_result
+        self.start_count = 0
+        self.stop_count = 0
+        self.active = False
+        self._on_monitor_power_on = None
+
+    def start(self, on_monitor_power_on) -> bool:
+        self.start_count += 1
+        self._on_monitor_power_on = on_monitor_power_on
+        self.active = self.start_result
+        return self.start_result
+
+    def stop(self) -> bool:
+        self.stop_count += 1
+        self.active = False
+        return True
+
+    def emit_power_on(self) -> None:
+        callback = self._on_monitor_power_on
+        if callback is not None:
+            callback()
+
+
+class RetryingDisplayPowerMonitor(FakeDisplayPowerMonitor):
+    def __init__(self, stop_results: list[bool]) -> None:
+        super().__init__()
+        self._stop_results = iter(stop_results)
+
+    def stop(self) -> bool:
+        super().stop()
+        return next(self._stop_results)
+
+
+class FakeCountdownWindow:
+    def __init__(self, show_result: bool = True) -> None:
+        self.show_result = show_result
+        self.show_calls: list[int] = []
+        self.hide_count = 0
+        self.close_count = 0
+        self._on_cancel = None
+
+    def show(self, seconds: int, on_cancel) -> bool:
+        self.show_calls.append(seconds)
+        self._on_cancel = on_cancel
+        return self.show_result
+
+    def hide(self) -> None:
+        self.hide_count += 1
+
+    def close(self) -> None:
+        self.close_count += 1
+        self._on_cancel = None
+
+    def emit_cancel(self) -> None:
+        callback = self._on_cancel
+        if callback is not None:
+            callback()
 
 
 class StubProtection:
@@ -109,18 +175,30 @@ def make_controller(
     *,
     power: StubPower | None = None,
     monitor: FakeRawInputMonitor | None = None,
+    power_monitor: FakeDisplayPowerMonitor | None = None,
+    countdown_window: FakeCountdownWindow | None = None,
     timers: FakeTimerFactory | None = None,
-) -> tuple[DisplayProtectionController, StubPower, FakeRawInputMonitor, FakeTimerFactory]:
+) -> tuple[
+    DisplayProtectionController,
+    StubPower,
+    FakeRawInputMonitor,
+    FakeDisplayPowerMonitor,
+    FakeCountdownWindow,
+    FakeTimerFactory,
+]:
     power = power or StubPower()
     monitor = monitor or FakeRawInputMonitor()
+    power_monitor = power_monitor or FakeDisplayPowerMonitor()
+    countdown_window = countdown_window or FakeCountdownWindow()
     timers = timers or FakeTimerFactory()
     controller = DisplayProtectionController(
         power=power,
         input_monitor=monitor,
+        power_monitor=power_monitor,
+        countdown_window=countdown_window,
         timer_factory=timers,
     )
-    return controller, power, monitor, timers
-
+    return controller, power, monitor, power_monitor, countdown_window, timers
 
 def test_display_power_controller_maps_off_to_win32_power_value() -> None:
     power_states: list[int] = []
@@ -203,58 +281,221 @@ def test_raw_input_monitor_does_not_start_on_non_windows(monkeypatch, caplog) ->
     assert "Raw Input 监听失败" in caplog.text
 
 
-def test_display_protection_arms_one_60_second_timer_and_turns_off_once() -> None:
-    controller, power, monitor, timers = make_controller()
+class FakeRawInputUser32:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def GetRawInputData(self, _handle, _command, data, size, _header_size):
+        if data is None:
+            size._obj.value = len(self.payload)
+        else:
+            size._obj.value = len(self.payload)
+            ctypes.memmove(data, self.payload, len(self.payload))
+        return len(self.payload)
+
+
+def make_raw_input_packet(
+    device_type: int,
+    *,
+    flags: int = 0,
+    message: int = display_protection.WM_KEYDOWN,
+) -> bytes:
+    header = display_protection._RawInputHeader(
+        device_type,
+        0,
+        None,
+        0,
+    )
+    if device_type != display_protection.RIM_TYPEKEYBOARD:
+        return bytes(header)
+    keyboard = display_protection._RawKeyboard(
+        30,
+        flags,
+        0,
+        65,
+        message,
+        0,
+    )
+    header.dwSize = ctypes.sizeof(header) + ctypes.sizeof(keyboard)
+    return bytes(header) + bytes(keyboard)
+
+
+def test_raw_input_only_reports_first_keyboard_key_down() -> None:
+    monitor = WindowsRawInputMonitor()
+    events: list[str] = []
+    monitor._on_key_down = lambda: events.append("key_down")
+    key_down = make_raw_input_packet(display_protection.RIM_TYPEKEYBOARD)
+    key_up = make_raw_input_packet(
+        display_protection.RIM_TYPEKEYBOARD,
+        flags=display_protection.RI_KEY_BREAK,
+        message=0x0101,
+    )
+
+    monitor._handle_raw_input(FakeRawInputUser32(key_down), 1)
+    monitor._handle_raw_input(FakeRawInputUser32(key_down), 1)
+    monitor._handle_raw_input(FakeRawInputUser32(key_up), 1)
+    monitor._handle_raw_input(FakeRawInputUser32(key_down), 1)
+    monitor._handle_raw_input(
+        FakeRawInputUser32(
+            make_raw_input_packet(display_protection.RIM_TYPEMOUSE),
+        ),
+        1,
+    )
+
+    assert events == ["key_down", "key_down"]
+
+
+def test_display_power_monitor_only_reports_monitor_power_on() -> None:
+    monitor = display_protection.WindowsDisplayPowerMonitor()
+    events: list[str] = []
+    monitor._on_monitor_power_on = lambda: events.append("power_on")
+    setting = display_protection._PowerBroadcastSetting()
+    setting.PowerSetting = display_protection.GUID_MONITOR_POWER_ON
+    setting.DataLength = 4
+
+    setting.Data[0] = 0
+    monitor._handle_power_setting_change(ctypes.addressof(setting))
+    setting.Data[0] = 1
+    monitor._handle_power_setting_change(ctypes.addressof(setting))
+
+    assert events == ["power_on"]
+
+
+def test_display_protection_starts_five_second_countdown_and_reprotects_after_wake() -> None:
+    controller, power, monitor, power_monitor, window, timers = make_controller()
 
     assert controller.arm() is True
-    timer = timers.timers[0]
-    assert timer.interval == DISPLAY_PROTECTION_DELAY_SECONDS
-    assert timer.started is True
+    initial_timer = timers.timers[0]
+    assert initial_timer.interval == INITIAL_PROTECTION_DELAY_SECONDS
+    assert initial_timer.started is True
+    assert window.show_calls == [5]
     assert monitor.start_count == 1
+    assert power_monitor.start_count == 1
 
-    timer.fire()
-    timer.fire_even_if_cancelled()
-
+    initial_timer.fire()
+    initial_timer.fire_even_if_cancelled()
     assert power.calls == 1
     assert monitor.stop_count == 0
+    assert power_monitor.stop_count == 0
+
+    power_monitor.emit_power_on()
+    reprotection_timer = timers.timers[1]
+    assert reprotection_timer.interval == REPROTECTION_DELAY_SECONDS
+    assert window.show_calls == [5, 60]
+    reprotection_timer.fire()
+    assert power.calls == 2
+
+    power_monitor.emit_power_on()
+    second_reprotection_timer = timers.timers[2]
+    assert second_reprotection_timer.interval == REPROTECTION_DELAY_SECONDS
+    second_reprotection_timer.fire()
+    assert power.calls == 3
 
     controller.close()
 
 
-def test_raw_input_before_deadline_cancels_timer_without_turning_off() -> None:
-    controller, power, monitor, timers = make_controller()
+def test_countdown_window_cancel_prevents_initial_power_off() -> None:
+    controller, power, monitor, power_monitor, window, timers = make_controller()
 
     assert controller.arm() is True
     timer = timers.timers[0]
-    monitor.emit_input()
+    window.emit_cancel()
     timer.fire_even_if_cancelled()
 
     assert timer.cancelled is True
     assert power.calls == 0
     assert monitor.stop_count == 1
-
+    assert power_monitor.stop_count == 1
     controller.close()
 
 
-def test_raw_input_after_display_off_stops_listener_without_second_turn_off() -> None:
-    controller, power, monitor, timers = make_controller()
+def test_keyboard_key_down_cancels_initial_countdown() -> None:
+    controller, power, monitor, power_monitor, window, timers = make_controller()
 
     assert controller.arm() is True
-    timer = timers.timers[0]
-    timer.fire()
-    assert power.calls == 1
-    assert monitor.stop_count == 0
+    monitor.emit_key_down()
+    timers.timers[0].fire_even_if_cancelled()
 
-    monitor.emit_input()
-    timer.fire_even_if_cancelled()
-
-    assert power.calls == 1
+    assert power.calls == 0
     assert monitor.stop_count == 1
-
+    assert power_monitor.stop_count == 1
+    assert window.hide_count >= 2
     controller.close()
 
-def test_timer_display_power_failure_logs_and_stops_listener(caplog) -> None:
-    controller, power, monitor, timers = make_controller(power=StubPower(result=False))
+
+def test_mouse_input_does_not_cancel_countdown() -> None:
+    controller, power, monitor, power_monitor, _, timers = make_controller()
+
+    assert controller.arm() is True
+    monitor.emit_mouse()
+    timers.timers[0].fire()
+
+    assert power.calls == 1
+    assert monitor.stop_count == 0
+    assert power_monitor.stop_count == 0
+    controller.close()
+
+
+def test_keyboard_wake_key_cancels_without_reprotection_countdown() -> None:
+    controller, power, monitor, power_monitor, _, timers = make_controller()
+
+    assert controller.arm() is True
+    timers.timers[0].fire()
+    monitor.emit_key_down()
+    power_monitor.emit_power_on()
+
+    assert power.calls == 1
+    assert len(timers.timers) == 1
+    controller.close()
+
+
+def test_mouse_wake_starts_reprotection_countdown() -> None:
+    controller, power, monitor, power_monitor, _, timers = make_controller()
+
+    assert controller.arm() is True
+    timers.timers[0].fire()
+    monitor.emit_mouse()
+    power_monitor.emit_power_on()
+    timers.timers[1].fire()
+
+    assert power.calls == 2
+    controller.close()
+
+
+def test_duplicate_power_on_notifications_do_not_create_duplicate_timer() -> None:
+    controller, power, _, power_monitor, _, timers = make_controller()
+
+    assert controller.arm() is True
+    timers.timers[0].fire()
+    power_monitor.emit_power_on()
+    power_monitor.emit_power_on()
+
+    assert len(timers.timers) == 2
+    timers.timers[1].fire()
+    assert power.calls == 2
+    controller.close()
+
+
+def test_cancel_after_wake_blocks_future_reprotection_cycles() -> None:
+    controller, power, monitor, power_monitor, window, timers = make_controller()
+
+    assert controller.arm() is True
+    timers.timers[0].fire()
+    power_monitor.emit_power_on()
+    window.emit_cancel()
+    timers.timers[1].fire_even_if_cancelled()
+    power_monitor.emit_power_on()
+
+    assert power.calls == 1
+    assert len(timers.timers) == 2
+    assert monitor.stop_count == 1
+    controller.close()
+
+
+def test_timer_display_power_failure_stops_both_listeners(caplog) -> None:
+    controller, power, monitor, power_monitor, _, timers = make_controller(
+        power=StubPower(result=False),
+    )
 
     assert controller.arm() is True
     with caplog.at_level("ERROR"):
@@ -262,13 +503,13 @@ def test_timer_display_power_failure_logs_and_stops_listener(caplog) -> None:
 
     assert power.calls == 1
     assert monitor.stop_count == 1
+    assert power_monitor.stop_count == 1
     assert "OLED 护屏定时关闭显示器失败" in caplog.text
-
     controller.close()
 
 
-def test_rearming_cancels_old_timer_and_does_not_duplicate_turn_off() -> None:
-    controller, power, monitor, timers = make_controller()
+def test_rearming_cancels_old_cycle_and_starts_new_initial_countdown() -> None:
+    controller, power, monitor, power_monitor, window, timers = make_controller()
 
     assert controller.arm() is True
     old_timer = timers.timers[0]
@@ -280,14 +521,16 @@ def test_rearming_cancels_old_timer_and_does_not_duplicate_turn_off() -> None:
 
     assert old_timer.cancelled is True
     assert monitor.start_count == 2
+    assert power_monitor.start_count == 2
     assert monitor.stop_count == 1
+    assert power_monitor.stop_count == 1
+    assert window.show_calls == [5, 5]
     assert power.calls == 1
-
     controller.close()
 
 
-def test_close_cancels_timer_and_stops_monitor_without_display_change() -> None:
-    controller, power, monitor, timers = make_controller()
+def test_close_cleans_timer_monitors_and_window_without_display_change() -> None:
+    controller, power, monitor, power_monitor, window, timers = make_controller()
 
     assert controller.arm() is True
     timer = timers.timers[0]
@@ -296,29 +539,52 @@ def test_close_cancels_timer_and_stops_monitor_without_display_change() -> None:
 
     assert timer.cancelled is True
     assert monitor.stop_count == 1
+    assert power_monitor.stop_count == 1
+    assert window.close_count == 1
     assert power.calls == 0
 
 
 def test_close_retries_when_monitor_stop_reports_failure() -> None:
     monitor = RetryingRawInputMonitor([False, True])
-    controller, _, _, _ = make_controller(monitor=monitor)
+    power_monitor = RetryingDisplayPowerMonitor([False, True])
+    controller, _, _, _, _, _ = make_controller(
+        monitor=monitor,
+        power_monitor=power_monitor,
+    )
 
     assert controller.arm() is True
     controller.close()
     controller.close()
 
     assert monitor.stop_count == 2
+    assert power_monitor.stop_count == 2
 
 
 def test_monitor_start_failure_returns_false_and_cleans_up(caplog) -> None:
     monitor = FakeRawInputMonitor(start_result=False)
-    controller, power, _, timers = make_controller(monitor=monitor)
+    controller, power, _, power_monitor, _, timers = make_controller(monitor=monitor)
 
     with caplog.at_level("ERROR"):
         assert controller.arm() is False
 
     assert timers.timers == []
     assert monitor.stop_count == 1
+    assert power_monitor.start_count == 0
+    assert power.calls == 0
+
+
+def test_power_monitor_start_failure_returns_false_and_stops_raw_input(caplog) -> None:
+    power_monitor = FakeDisplayPowerMonitor(start_result=False)
+    controller, power, monitor, _, _, timers = make_controller(
+        power_monitor=power_monitor,
+    )
+
+    with caplog.at_level("ERROR"):
+        assert controller.arm() is False
+
+    assert timers.timers == []
+    assert monitor.stop_count == 1
+    assert power_monitor.stop_count == 1
     assert power.calls == 0
 
 
@@ -330,11 +596,10 @@ def test_oled_saver_plugin_exposes_one_action_and_starts_protection() -> None:
     assert plugin.get_sub_actions() == [{"id": "turn_off", "label": "进入护屏"}]
     assert plugin.execute({"sub_action": "turn_off"}).to_dict() == {
         "success": True,
-        "message": "已启动护屏，60 秒后关闭显示器",
+        "message": "已启动护屏，5 秒后关闭显示器",
         "data": None,
     }
     assert plugin.execute({"sub_action": "turn_on"}).success is False
-    assert protection.arm_count == 1
 
     plugin.close()
     assert protection.close_count == 1
