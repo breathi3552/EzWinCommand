@@ -38,6 +38,8 @@ docs/*
 !docs/changelog.md
 !docs/product/
 !docs/product/**
+!docs/adr/
+!docs/adr/**
 !docs/tests/
 !docs/tests/**
 !docs/versions/

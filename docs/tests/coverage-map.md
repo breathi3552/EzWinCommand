@@ -1,26 +1,25 @@
-# EzWinCommand 测试覆盖矩阵
+# EzWinCommand 长期业务验收地图
 
-业务覆盖是交付门禁；行/分支覆盖率只作为诊断指标。用例随产品演进维护，过时用例应修改或废弃。
+本地图记录必须跨任务持续守住的高风险业务路径、适合的验证层级和当前证据缺口。普通单元测试目录、类名和短期执行报告不在此维护；代码覆盖率只作为诊断指标。
 
-| 用例 ID | 模块/功能点 | 层级 | 自动化实现或状态 |
+| 验收路径 | 必须保持的结果 | 最低验证层级 | 当前证据与缺口 |
 |---|---|---|---|
-| TC-PAIR-001 | PAIR-01/02 配对生命周期 | Server interface | `EzWinCommand-server/tests/test_pairing_lifecycle.py` |
-| TC-AUTH-001 | AUTH-01/02 鉴权、撤销与流终止 | Server interface | `EzWinCommand-server/tests/test_pairing_lifecycle.py` |
-| TC-WEB-LOCAL-001 | PAIR-01/AUTH-04 本机管理事件、敏感边界与空闲无轮询 | Server interface/static contract | `EzWinCommand-server/tests/test_android_lan_contract.py` |
-| TC-CMD-001 | CMD-02/03 同步与异步命令 | Server interface | `EzWinCommand-server/tests/test_async_command.py` |
-| TC-MEDIA-001 | MEDIA-01/02/03 媒体状态、控制与事件 | Server unit/interface | `test_media_service.py`, `test_media_api.py`, `test_media_plugin.py` |
-| TC-AUDIO-001 | AUDIO-01 音量与设备 | Server unit/interface | `test_media_service.py`, `test_media_api.py` |
-| TC-ANDROID-001 | ANDROID-CONN/PAIR/SESSION | Android JVM/Robolectric | `app/src/test/.../network`, `state`, `storage` |
-| TC-ANDROID-002 | ANDROID-MEDIA/AUDIO UI 行为 | Android JVM/Robolectric | `app/src/test/.../ui/control` |
-| TC-XPLAT-001 | XPLAT-PAIR/AUTH 协议 | Cross-platform contract | Server `test_android_lan_contract.py` + Android network tests |
-| TC-XPLAT-002 | XPLAT-MEDIA/SSE wire 与恢复 | Cross-platform contract | Server media API tests + Android media/network tests |
-| TC-E2E-001 | Web 生成配对码 → Android 配对 → 控制页 | Android UI/E2E | 自动化框架待建设 |
-| TC-E2E-002 | 媒体/音量/设备真实控制 | AI 辅助/人工 | Windows + Android 真实环境；待人工验证 |
-| TC-WIN-001 | 防火墙、UAC、自启、托盘 | AI 辅助/人工 | Windows 真实环境；待人工验证 |
+| Server 发现与身份确认 | 发现结果必须经 Server 身份确认；地址变化不应被误判为新 Server；过期发现回调不能覆盖当前扫描 | Server/Android contract + 真实网络 | 自动化覆盖协议与状态；真机、路由器和防火墙组合仍需环境验证 |
+| 配对请求生命周期 | 远端不能读取真实配对码；失败、锁定、取消和过期不产生设备权限；成功只建立一个设备关系 | Server/Android contract | 自动化覆盖主要状态；PC 多请求呈现和 Android 生命周期需保留 UI/E2E 门禁 |
+| Android 配对恢复 | 重复提交、页面重建或暂时失败不得产生幽灵设备；失败后用户可修正输入，成功且安全保存后才进入控制状态 | Android state/UI + Server contract | JVM/Robolectric 有覆盖；视觉、输入法和 TalkBack 仍需设备或模拟器验证 |
+| 设备会话与撤销 | 有效会话可在重启后恢复；撤销成功使请求和活动流失效；撤销失败不误删仍有效的本地会话 | Cross-platform contract + UI/E2E | 自动化覆盖存储、鉴权和撤销；真实 Keystore 与跨设备撤销需环境验证 |
+| 本地管理安全边界 | 配对码和设备管理只对 PC 本机开放；管理事件不携带敏感值；断线后以权威快照恢复 | Server interface + Web browser | 接口与静态契约有覆盖；真实浏览器断线及多配对卡交互仍需 UI 验证 |
+| 插件加载与启用边界 | 只有已启用且成功加载的本地受信任插件动作可执行；单个插件失败不破坏其他能力 | Server interface | 自动化应覆盖禁用、加载失败和动作可见性；远程插件分发不属于验收范围 |
+| 异步命令生命周期 | 任务所有者隔离、重复提交收敛、重启和过期产生明确状态，公开结果不泄露内部诊断 | Server/Web/Android contract | 自动化覆盖 Server 与客户端状态；真实浏览器 soft timeout 和 Android 断网恢复仍需 E2E |
+| 媒体启动与恢复 | Windows 媒体初始化、超时、迟到成功和重建不能阻断基础 HTTP；资源只按所属生命周期关闭 | Server unit/interface + Windows environment | 自动化覆盖生命周期；真实 GSMTC/Core Audio 故障恢复仍需环境验证 |
+| 媒体快照与事件同步 | Snapshot 与 SSE 之间不丢变化；修订号单调；慢客户端和断线恢复得到最新状态；旧封面不能回写 | Cross-platform contract + UI/E2E | Server/Android 自动化覆盖主要状态；真实播放器、封面与长时间断线仍需环境验证 |
+| 音频设备控制 | 没有活动媒体时音量和输入、输出设备仍可控制；平台回调只更新相关状态且设备切换后继续有效 | Server unit/interface + Windows environment | 替身覆盖接口；真实 Core Audio 设备、角色与 callback 重绑定仍需环境验证 |
+| 电竞模式进入与退出 | 进入按受控顺序执行并在首个失败处停止；退出恢复音频并只关闭受管进程，不结束游戏平台 | Server unit + Windows environment | 自动化覆盖顺序与失败停止；YY、Steam、CS2 和真实音频设备的完整链路待环境验证 |
+| Windows 生命周期集成 | 托盘、防火墙、自启和退出行为在当前登录用户会话内一致，提权或外部命令失败可诊断且不伪成功 | Windows environment | 普通替身测试不能替代 UAC、防火墙、登录启动和托盘交互验证 |
+| OLED 护屏与输入取消 | 用户点击后只启动一次性 60 秒定时器；定时器到期只关闭显示器一次；关屏前后的键盘、鼠标 Raw Input 都会取消当前流程；不使用 Sleep/Hibernate，Server 重启不主动改变显示器状态 | Server unit/interface + Android UI + Windows environment | Automated：Server 单测覆盖 60 秒定时器、输入取消、重复点击、关闭清理、键鼠设备声明和插件单动作；Android JVM 覆盖单一矩形进入按钮。Manual — 待人工验证：真实显示器黑屏/原生输入唤醒，以及 Android 真机/模拟器跨端交互。 |
 
-## 待建设
+## 证据规则
 
-- Android 模拟器 + 真实 Server 的稳定 UI 自动化驱动层。
-- Web 管理端 UI 自动化。
-- Python 与 Android 覆盖率采集和趋势输出。
-- AI 环境测试的证据目录、脱敏和结果格式。
+- 自动化通过只证明其实际覆盖的层级，不能替代真实 Windows、真实网络或 UI 行为。
+- 环境验证必须记录运行身份、关键输入、可复核输出和未执行项；敏感设备密钥、配对码及本机身份文件不得进入证据。
+- 产品原则或高风险路径发生变化时更新本地图；仅重命名测试文件或调整内部实现无需修改。
