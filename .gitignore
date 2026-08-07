@@ -25,16 +25,12 @@ Thumbs.db
 EzWinCommand-server/config.local.env
 # 本机 Server 身份（包含私钥）
 EzWinCommand-server/agent/server_identity.json
-# OMP 工作流定义和可复用工具源码纳入版本控制；本机配置与运行产物保持忽略
+# OMP 项目入口与可复用工具源码纳入版本控制；本机配置与运行产物保持忽略
 .omp/*
 !.omp/AGENTS.md
-!.omp/RULES.md
-!.omp/agents/
-!.omp/agents/**
-!.omp/skills/
-!.omp/skills/**
 !.omp/kotlin-lsp-proxy.py
 .agent/
+.omp-temp-agent/
 
 # 当前产品与长期测试资料纳入版本控制；历史过程资料仅保留在本机
 docs/*
@@ -46,6 +42,8 @@ docs/*
 !docs/tests/**
 !docs/versions/
 !docs/versions/**
+!docs/agents/
+!docs/agents/**
 
 
 # 设备鉴权数据（运行时生成，包含本机配对 Key）

@@ -6,8 +6,9 @@
 
 ```text
 docs/
-├── product/       # 按模块、特性和功能点维护的当前产品地图
-├── tests/         # 长期测试用例与业务覆盖矩阵
+├── agents/        # Skill 共用的 tracker、triage 与知识分层配置
+├── product/       # 按模块、特性和功能点维护的当前产品契约
+├── tests/         # 长期业务验收覆盖
 ├── versions/      # 轻量版本级变更日志
 └── v*/            # 本机历史过程资料，不纳入版本控制，也不作为当前事实来源
 ```
@@ -17,8 +18,8 @@ docs/
 - 产品行为、协议、安全边界或模块职责变化时更新 `product/`。
 - 长期测试用例或自动化实现变化时更新 `tests/coverage-map.md`。
 - 用户可见变化、重要修复及待人工验证项写入当前版本日志。
-- 临时需求契约、前置测试分析和验证 Verdict 默认保留在会话中。
+- 临时计划、研究草稿和测试报告默认保留在 session 或 `local://`。
 - 截图、UI dump、日志和临时报告属于运行证据，不作为正式产品文档提交。
 - 历史 `v*/REQ-*` 仅作本机参考，不提交、不迁移、不反向覆盖当前产品地图。
 
-工作流由 `.omp/AGENTS.md` 与 `skill://workflow` 定义；产品资料维护方式见 `skill://product-model`。
+工程路径由 `.omp/AGENTS.md` 与 `skill://ask-matt` 定义；知识分层与维护方式见 `docs/agents/domain.md`。
