@@ -48,6 +48,17 @@ internal fun mediaButtonSpecs(available: Boolean, playback: MediaPlayback): List
     MediaButtonSpec(MediaAction.Next, R.drawable.ic_media_next_24, if (available) R.string.media_next else R.string.media_next_disabled, 48, available),
 )
 
+private enum class AudioDeviceKind(val sheetTitle: Int) {
+    OUTPUT(R.string.media_select_output),
+    INPUT(R.string.media_select_input),
+    ;
+
+    fun action(endpointId: String): MediaAction = when (this) {
+        OUTPUT -> MediaAction.SetOutputDevice(endpointId)
+        INPUT -> MediaAction.SetInputDevice(endpointId)
+    }
+}
+
 
 
 class ControlScreen(context: Context) : FrameLayout(context) {
@@ -62,7 +73,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     private var outputSelector: Button? = null
     private var inputSelector: Button? = null
     private var mediaError: TextView? = null
-    private var mediaAction: ((MediaAction) -> Unit)? = null
+    private var mediaIntent: ((MediaControlIntent) -> Unit)? = null
     private var currentDevices: List<DeviceInfo> = emptyList()
     private var currentDeviceKey: String? = null
     private var revokeDevice: ((String) -> Unit)? = null
@@ -126,8 +137,8 @@ class ControlScreen(context: Context) : FrameLayout(context) {
             button.isEnabled = spec.enabled
             button.alpha = if (spec.enabled) 1f else .38f
         }
-        outputSelector?.let { configureDeviceButton(it, state.renderDevices, state.selectedRenderId, ready.mediaLoading, R.string.media_select_output, MediaAction::SetOutputDevice) }
-        inputSelector?.let { configureDeviceButton(it, state.captureDevices, state.selectedCaptureId, ready.mediaLoading, R.string.media_select_input, MediaAction::SetInputDevice) }
+        outputSelector?.let { configureDeviceButton(it, state.renderDevices, state.selectedRenderId, ready.mediaLoading, AudioDeviceKind.OUTPUT) }
+        inputSelector?.let { configureDeviceButton(it, state.captureDevices, state.selectedCaptureId, ready.mediaLoading, AudioDeviceKind.INPUT) }
         mediaError?.apply { text = state.error.orEmpty(); visibility = if (state.error.isNullOrBlank()) View.GONE else View.VISIBLE }
     }
 
@@ -138,26 +149,26 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         onRenameDevice: (String, String) -> Unit,
         onBackToPairing: () -> Unit,
         onMediaRefresh: () -> Unit = {},
-        onMediaAction: (MediaAction) -> Unit = {},
+        onMediaIntent: (MediaControlIntent) -> Unit = {},
     ) {
         revokeDevice = onRevokeDevice
         renameDevice = onRenameDevice
         backToPairing = onBackToPairing
         refreshMedia = onMediaRefresh
         when (state) {
-            ControlUiState.Loading -> renderActions(listOf(ActionPlugin("media", context.getString(R.string.media_title), "", "", emptyList())), state, onAction, onBackToPairing, onMediaAction)
+            ControlUiState.Loading -> renderActions(listOf(ActionPlugin("media", context.getString(R.string.media_title), "", "", emptyList())), state, onAction, onBackToPairing, onMediaIntent)
             is ControlUiState.Error -> { actionsContainer.removeAllViews(); actionsContainer.addView(emptyView(state.message)) }
-            is ControlUiState.Ready -> { renderDevices(state.devices, state.currentDeviceKey, onRevokeDevice, onRenameDevice); renderActions(state.actions, state, onAction, onBackToPairing, onMediaAction) }
+            is ControlUiState.Ready -> { renderDevices(state.devices, state.currentDeviceKey, onRevokeDevice, onRenameDevice); renderActions(state.actions, state, onAction, onBackToPairing, onMediaIntent) }
         }
     }
 
-    internal fun renderActions(actions: List<ActionPlugin>, state: ControlUiState, onAction: (ActionCommand) -> Unit, onBack: () -> Unit, onMediaAction: (MediaAction) -> Unit = {}) {
+    internal fun renderActions(actions: List<ActionPlugin>, state: ControlUiState, onAction: (ActionCommand) -> Unit, onBack: () -> Unit, onMediaIntent: (MediaControlIntent) -> Unit = {}) {
         actionsContainer.removeAllViews()
         oledActionButton = null
         if (actions.isEmpty()) { actionsContainer.addView(emptyView(context.getString(R.string.control_no_actions)), verticalParams(dp(12))); return }
         actions.forEach { plugin ->
             val card = when (plugin.name) {
-                "media" -> mediaCard(state as? ControlUiState.Ready, onMediaAction)
+                "media" -> mediaCard(state as? ControlUiState.Ready, onMediaIntent)
                 "oled_saver" -> oledSaverCard(plugin, onAction)
                 else -> pluginCard(plugin, onAction)
             }
@@ -179,11 +190,11 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         }
     }
 
-    private fun mediaCard(ready: ControlUiState.Ready?, onAction: (MediaAction) -> Unit): LinearLayout {
+    private fun mediaCard(ready: ControlUiState.Ready?, onIntent: (MediaControlIntent) -> Unit): LinearLayout {
         val state = ready?.media
         val loading = ready == null || ready.mediaLoading
         val available = state?.available == true && !loading
-        mediaAction = onAction
+        mediaIntent = onIntent
         return panel().apply {
             val mediaHotspot = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -212,7 +223,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
 
             val controls = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
             mediaButtons = mediaButtonSpecs(available, state?.playback ?: MediaPlayback.NONE).mapIndexed { index, spec ->
-                mediaButton(spec.icon, spec.contentDescription, spec.enabled) { onAction(spec.action) }.also { button ->
+                mediaButton(spec.icon, spec.contentDescription, spec.enabled) { onIntent(MediaControlIntent.Execute(spec.action)) }.also { button ->
                     controls.addView(button, LinearLayout.LayoutParams(dimen(if (spec.touchTargetDp == 56) R.dimen.media_play_touch_target else R.dimen.media_touch_target), dimen(if (spec.touchTargetDp == 56) R.dimen.media_play_touch_target else R.dimen.media_touch_target)).apply {
                         if (index == 1) { leftMargin = dimen(R.dimen.media_control_gap); rightMargin = dimen(R.dimen.media_control_gap) }
                     })
@@ -233,18 +244,18 @@ class ControlScreen(context: Context) : FrameLayout(context) {
                     override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
                         if (fromUser) {
                             percent.text = context.getString(R.string.media_volume_percent, value)
-                            onAction(MediaAction.SetVolume(value, gestureFinished = false))
+                            onIntent(MediaControlIntent.ChangeVolume(value))
                         }
                     }
                     override fun onStartTrackingTouch(bar: SeekBar) = Unit
-                    override fun onStopTrackingTouch(bar: SeekBar) { onAction(MediaAction.SetVolume(bar.progress)) }
+                    override fun onStopTrackingTouch(bar: SeekBar) { onIntent(MediaControlIntent.FinishVolume(bar.progress)) }
                 })
             }
             mediaSeekBar = seek
             addView(seek, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dimen(R.dimen.media_seek_height)))
             addView(View(context).apply { setBackgroundColor(color(R.color.ezwin_border)) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dimen(R.dimen.media_divider_height)).apply { topMargin = dimen(R.dimen.media_section_gap); bottomMargin = dimen(R.dimen.media_section_gap) })
-            outputSelector = addDeviceSelector(R.drawable.ic_speaker_20, R.string.media_output_device, R.string.media_select_output, state?.renderDevices.orEmpty(), state?.selectedRenderId, loading, MediaAction::SetOutputDevice, onAction)
-            inputSelector = addDeviceSelector(R.drawable.ic_microphone_20, R.string.media_input_device, R.string.media_select_input, state?.captureDevices.orEmpty(), state?.selectedCaptureId, loading, MediaAction::SetInputDevice, onAction)
+            outputSelector = addDeviceSelector(R.drawable.ic_speaker_20, R.string.media_output_device, AudioDeviceKind.OUTPUT, state?.renderDevices.orEmpty(), state?.selectedRenderId, loading, onIntent)
+            inputSelector = addDeviceSelector(R.drawable.ic_microphone_20, R.string.media_input_device, AudioDeviceKind.INPUT, state?.captureDevices.orEmpty(), state?.selectedCaptureId, loading, onIntent)
             mediaError = metaText(state?.error.orEmpty()).apply { setTextColor(color(R.color.ezwin_error)); visibility = if (state?.error.isNullOrBlank()) View.GONE else View.VISIBLE }
             addView(mediaError, verticalParams(dp(12)))
         }
@@ -253,20 +264,19 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     private fun LinearLayout.addDeviceSelector(
         icon: Int,
         label: Int,
-        sheetTitle: Int,
+        kind: AudioDeviceKind,
         endpoints: List<AudioEndpoint>,
         selectedId: String?,
         disabled: Boolean,
-        actionFactory: (String) -> MediaAction,
-        onAction: (MediaAction) -> Unit,
+        onIntent: (MediaControlIntent) -> Unit,
     ): Button {
         val title = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         title.addView(ImageView(context).apply { setImageResource(icon); importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }, LinearLayout.LayoutParams(dp(20), dp(20)))
         title.addView(bodyText(context.getString(label)), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
         addView(title, verticalParams(if (childCount > 6) dp(12) else 0))
-        val button = secondaryButton("") { showDeviceSheet(endpoints, selectedId, sheetTitle, actionFactory, onAction) }
-        button.contentDescription = context.getString(sheetTitle)
-        configureDeviceButton(button, endpoints, selectedId, disabled, sheetTitle, actionFactory)
+        val button = secondaryButton("") { showDeviceSheet(endpoints, selectedId, kind, onIntent) }
+        button.contentDescription = context.getString(kind.sheetTitle)
+        configureDeviceButton(button, endpoints, selectedId, disabled, kind)
         addView(button, verticalParams(dp(6)))
         return button
     }
@@ -276,21 +286,19 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         endpoints: List<AudioEndpoint>,
         selectedId: String?,
         disabled: Boolean,
-        sheetTitle: Int,
-        actionFactory: (String) -> MediaAction,
+        kind: AudioDeviceKind,
     ) {
         button.text = endpoints.firstOrNull { it.id == selectedId }?.name
             ?: context.getString(if (endpoints.isEmpty()) if (disabled) R.string.media_devices_loading else R.string.media_no_devices else R.string.media_choose_device)
         button.isEnabled = !disabled && endpoints.isNotEmpty()
-        button.setOnClickListener { showDeviceSheet(endpoints, selectedId, sheetTitle, actionFactory, mediaAction ?: return@setOnClickListener) }
+        button.setOnClickListener { showDeviceSheet(endpoints, selectedId, kind, mediaIntent ?: return@setOnClickListener) }
     }
 
     private fun showDeviceSheet(
         endpoints: List<AudioEndpoint>,
         selectedId: String?,
-        sheetTitle: Int,
-        actionFactory: (String) -> MediaAction,
-        onAction: (MediaAction) -> Unit,
+        kind: AudioDeviceKind,
+        onIntent: (MediaControlIntent) -> Unit,
     ) {
         if (endpoints.isEmpty()) return
         val dialog = BottomSheetDialog(context)
@@ -298,7 +306,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(color(R.color.ezwin_panel))
             setPadding(dp(16))
-            addView(singleLine(context.getString(sheetTitle), 18f, true))
+            addView(singleLine(context.getString(kind.sheetTitle), 18f, true))
         }
         val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         endpoints.forEach { endpoint ->
@@ -308,7 +316,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
                 isChecked = endpoint.id == selectedId
                 minHeight = dp(52)
                 setOnClickListener {
-                    if (endpoint.id != selectedId) onAction(actionFactory(endpoint.id))
+                    if (endpoint.id != selectedId) onIntent(MediaControlIntent.Execute(kind.action(endpoint.id)))
                     dialog.dismiss()
                 }
             })

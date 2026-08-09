@@ -30,7 +30,7 @@ class MediaControlScreenViewTest {
         val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
         val screen = ControlScreen(activity)
         activity.setContentView(screen)
-        val commands = mutableListOf<MediaAction>()
+        val commands = mutableListOf<MediaControlIntent>()
         val media = MediaState.LOADING.copy(
             renderDevices = listOf(AudioEndpoint("first", "第一个完整设备名"), AudioEndpoint("second", "第二个设备")),
             selectedRenderId = null,
@@ -39,7 +39,7 @@ class MediaControlScreenViewTest {
         screen.render(
             ControlUiState.Ready(listOf(ActionPlugin("media", "媒体", "", "", emptyList())), emptyList(), media = media, mediaLoading = false),
             {}, {}, { _, _ -> }, {},
-            onMediaAction = commands::add,
+            onMediaIntent = commands::add,
         )
         shadowOf(android.os.Looper.getMainLooper()).idle()
         val output: Button = screen.mediaSelectorsForTest().first!!
@@ -72,7 +72,7 @@ class MediaControlScreenViewTest {
         val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
         val screen = ControlScreen(activity)
         activity.setContentView(screen)
-        val commands = mutableListOf<MediaAction>()
+        val commands = mutableListOf<MediaControlIntent>()
         val media = MediaState.LOADING.copy(
             renderDevices = listOf(AudioEndpoint("output-old", "旧输出"), AudioEndpoint("output-new", "新输出")),
             captureDevices = listOf(AudioEndpoint("input", "输入设备")),
@@ -86,7 +86,7 @@ class MediaControlScreenViewTest {
             mediaLoading = false,
         )
 
-        screen.render(ready, {}, {}, { _, _ -> }, {}, onMediaAction = commands::add)
+        screen.render(ready, {}, {}, { _, _ -> }, {}, onMediaIntent = commands::add)
         val output = screen.mediaSelectorsForTest().first!!
         assertEquals("旧输出", output.text)
         assertTrue(output.isEnabled)
@@ -101,7 +101,7 @@ class MediaControlScreenViewTest {
         newOption.performClick()
 
         assertEquals(
-            listOf(MediaAction.SetOutputDevice("output-new")),
+            listOf(MediaControlIntent.Execute(MediaAction.SetOutputDevice("output-new"))),
             commands,
         )
         assertEquals("旧输出", output.text)

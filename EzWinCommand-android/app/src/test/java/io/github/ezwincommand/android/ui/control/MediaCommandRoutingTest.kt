@@ -27,6 +27,14 @@ class MediaCommandRoutingTest {
         assertEquals(mapOf("sub_action" to "set_volume", "volume" to 37), capturedParams)
         assertEquals(2, capturedParams.size)
     }
+
+    @Test
+    fun `media sender exposes only the typed action interface`() {
+        val senders = ControlController::class.java.declaredMethods.filter { it.name == "sendMediaAction" }
+
+        assertEquals(1, senders.size)
+        assertEquals(MediaAction::class.java, senders.single().parameterTypes.first())
+    }
     @Test
     fun `media commands keep wire feedback and do not request post-command refresh`() = runBlocking {
         val sent = mutableListOf<Pair<String, String>>()

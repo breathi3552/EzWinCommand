@@ -47,6 +47,7 @@ import io.github.ezwincommand.android.ui.control.ControlController
 import io.github.ezwincommand.android.ui.control.ControlScreen
 import io.github.ezwincommand.android.ui.control.MediaConnectionController
 import io.github.ezwincommand.android.ui.control.MediaAction
+import io.github.ezwincommand.android.ui.control.MediaControlIntent
 import io.github.ezwincommand.android.ui.control.MediaVolumeActor
 import io.github.ezwincommand.android.ui.control.ControlPageGate
 import io.github.ezwincommand.android.ui.control.mergeReadyWithMedia
@@ -694,7 +695,7 @@ class MainActivity : AppCompatActivity() {
         controlState: ControlUiState,
     ) {
         lateinit var actionInvoker: (ActionCommand) -> Unit
-        lateinit var mediaActionInvoker: (MediaAction) -> Unit
+        lateinit var mediaIntentInvoker: (MediaControlIntent) -> Unit
         lateinit var revokeInvoker: (String) -> Unit
         lateinit var renameInvoker: (String, String) -> Unit
         actionInvoker = { command ->
@@ -707,15 +708,17 @@ class MainActivity : AppCompatActivity() {
                 if (!result.success) showTopMessage(errorMessage(result.message))
             }
         }
-        mediaActionInvoker = { action ->
+        mediaIntentInvoker = { intent ->
             lifecycleScope.launch {
-                if (action is MediaAction.SetVolume) {
-                    if (action.gestureFinished) mediaVolumeActor?.finishGesture(action.volume) else mediaVolumeActor?.submitVolume(action.volume)
-                    return@launch
+                when (intent) {
+                    is MediaControlIntent.ChangeVolume -> mediaVolumeActor?.submitVolume(intent.volume)
+                    is MediaControlIntent.FinishVolume -> mediaVolumeActor?.finishGesture(intent.volume)
+                    is MediaControlIntent.Execute -> {
+                        val result = controller.sendMediaAction(intent.action)
+                        showTopMessage(screen.showResult(result))
+                        if (!result.success) showTopMessage(errorMessage(result.message))
+                    }
                 }
-                val result = controller.sendMediaAction(action)
-                showTopMessage(screen.showResult(result))
-                if (!result.success) showTopMessage(errorMessage(result.message))
             }
         }
         revokeInvoker = { value ->
@@ -734,7 +737,7 @@ class MainActivity : AppCompatActivity() {
                 showTopMessage(getString(R.string.control_revoke_success))
                 val refreshed = controller.load()
                 coordinator.updateControlState(serverId, baseUrl, refreshed)
-                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaActionInvoker)
+                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
             }
         }
         renameInvoker = { value, name ->
@@ -743,10 +746,10 @@ class MainActivity : AppCompatActivity() {
                 showTopMessage(if (renamed) getString(R.string.control_rename_device_success) else errorMessage(getString(R.string.control_rename_device_failed)))
                 val refreshed = controller.load()
                 coordinator.updateControlState(serverId, baseUrl, refreshed)
-                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaActionInvoker)
+                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
             }
         }
-        screen.render(controlState, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaActionInvoker)
+        screen.render(controlState, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
     }
 
     private fun returnToPairing(baseUrl: String) {

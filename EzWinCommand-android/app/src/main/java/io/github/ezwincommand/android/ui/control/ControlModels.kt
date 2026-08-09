@@ -14,9 +14,15 @@ sealed interface MediaAction {
     data object PlayPause : MediaAction
     data object Previous : MediaAction
     data object Next : MediaAction
-    data class SetVolume(val volume: Int, val gestureFinished: Boolean = true) : MediaAction
+    data class SetVolume(val volume: Int) : MediaAction
     data class SetOutputDevice(val endpointId: String) : MediaAction
     data class SetInputDevice(val endpointId: String) : MediaAction
+}
+
+sealed interface MediaControlIntent {
+    data class Execute(val action: MediaAction) : MediaControlIntent
+    data class ChangeVolume(val volume: Int) : MediaControlIntent
+    data class FinishVolume(val volume: Int) : MediaControlIntent
 }
 
 sealed interface ControlUiState {
