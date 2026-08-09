@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from dataclasses import replace
 import http.client
@@ -10,6 +12,7 @@ import threading
 import time
 
 import uvicorn
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app import create_app
 from media.service import AudioEndpoint, MediaService, MediaState, _AudioReading, _MediaReading
@@ -54,6 +57,86 @@ class FakeMediaService(MediaService):
         future = Future()
         future.set_result(self.snapshot())
         return future
+
+class _LiveUvicornServer:
+    def __init__(
+        self,
+        application: FastAPI,
+        before_shutdown: Callable[[], None] | None = None,
+    ) -> None:
+        self._before_shutdown = before_shutdown
+        self._socket = socket.socket()
+        self._socket.bind(("127.0.0.1", 0))
+        self.port = self._socket.getsockname()[1]
+        self._server = uvicorn.Server(
+            uvicorn.Config(application, host="127.0.0.1", port=self.port, log_level="error")
+        )
+        self._thread = threading.Thread(
+            target=self._server.run,
+            kwargs={"sockets": [self._socket]},
+            daemon=True,
+        )
+        self._connections: list[http.client.HTTPConnection] = []
+
+    def start(self) -> None:
+        self._thread.start()
+        deadline = time.time() + 5
+        last_error: OSError | None = None
+        while time.time() < deadline:
+            try:
+                status, _ = self.request("GET", "/ping", timeout=0.5)
+                if status == 200:
+                    return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.05)
+        raise AssertionError("HTTP server 未就绪") from last_error
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: str | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 5,
+    ) -> tuple[int, bytes]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def open_connection(self, timeout: float = 5) -> http.client.HTTPConnection:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        self._connections.append(connection)
+        return connection
+
+    def stop(self) -> None:
+        for connection in self._connections:
+            connection.close()
+        self._connections.clear()
+        self._server.should_exit = True
+        if self._before_shutdown is not None:
+            self._before_shutdown()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+        self._socket.close()
+        assert not self._thread.is_alive()
+
+
+@contextmanager
+def _run_uvicorn(
+    application: FastAPI,
+    before_shutdown: Callable[[], None] | None = None,
+) -> Iterator[_LiveUvicornServer]:
+    live_server = _LiveUvicornServer(application, before_shutdown)
+    try:
+        live_server.start()
+        yield live_server
+    finally:
+        live_server.stop()
 
 def test_hanging_media_service_lifespan_ping() -> None:
     import threading
@@ -106,36 +189,10 @@ def test_hanging_media_service_real_uvicorn_socket_ping() -> None:
 
     service = MediaService(HangingAdapter)
     application = create_app(service)
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(application, host="127.0.0.1", port=port, log_level="error"))
-    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-    thread.start()
-    try:
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            try:
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.5)
-                try:
-                    conn.request("GET", "/ping")
-                    response = conn.getresponse()
-                    body = response.read()
-                finally:
-                    conn.close()
-                if response.status == 200:
-                    assert body == b'{"status":"ok"}'
-                    break
-            except OSError:
-                time.sleep(0.05)
-        else:
-            raise AssertionError("uvicorn listener did not become reachable")
-    finally:
-        server.should_exit = True
-        gate.set()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
-        service.stop(timeout=1)
+    with _run_uvicorn(application, before_shutdown=gate.set) as live_server:
+        status, body = live_server.request("GET", "/ping")
+        assert status == 200
+        assert body == b'{"status":"ok"}'
 
 
 def _remote_request(client: TestClient, method: str, url: str, **kwargs):
@@ -256,41 +313,7 @@ def test_successful_media_commands_publish_authoritative_sse_snapshot() -> None:
     application = create_app(service)
     application.state.discovery_publisher.start = lambda: None
     application.state.discovery_publisher.close = lambda: None
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    server = uvicorn.Server(
-        uvicorn.Config(application, host="127.0.0.1", port=port, log_level="error")
-    )
-    server_thread = threading.Thread(
-        target=server.run,
-        kwargs={"sockets": [sock]},
-        daemon=True,
-    )
-    event_connections: list[http.client.HTTPConnection] = []
-    server_thread.start()
-
-    def request(method: str, path: str, body: str | None = None, headers=None) -> tuple[int, bytes]:
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        try:
-            connection.request(method, path, body=body, headers=headers or {})
-            response = connection.getresponse()
-            return response.status, response.read()
-        finally:
-            connection.close()
-
-    try:
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            try:
-                status, _ = request("GET", "/ping")
-                if status == 200:
-                    break
-            except OSError:
-                time.sleep(0.05)
-        else:
-            raise AssertionError("HTTP server 未就绪")
-
+    with _run_uvicorn(application) as live_server:
         command_cases = (
             ("play_pause", {}, {"playback": "paused"}),
             ("prev", {}, {"playback": "playing"}),
@@ -300,12 +323,11 @@ def test_successful_media_commands_publish_authoritative_sse_snapshot() -> None:
             ("set_input_device", {"endpoint_id": "in-2"}, {"selected_capture_id": "in-2"}),
         )
         for sub_action, extra, expected in command_cases:
-            status, state_body = request("GET", "/api/media/state")
+            status, state_body = live_server.request("GET", "/api/media/state")
             assert status == 200
             before = json.loads(state_body)["revision"]
 
-            events = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            event_connections.append(events)
+            events = live_server.open_connection()
             events.request(
                 "GET",
                 f"/api/media/events?since={before}",
@@ -317,7 +339,7 @@ def test_successful_media_commands_publish_authoritative_sse_snapshot() -> None:
 
             params = {"sub_action": sub_action, **extra}
             command_body = json.dumps({"action": "media", "params": params}, ensure_ascii=False)
-            status, response_body = request(
+            status, response_body = live_server.request(
                 "POST",
                 "/api/command",
                 body=command_body,
@@ -344,13 +366,6 @@ def test_successful_media_commands_publish_authoritative_sse_snapshot() -> None:
             if is_media_event:
                 assert payload["title"] == expected_title
             events.close()
-    finally:
-        for connection in event_connections:
-            connection.close()
-        server.should_exit = True
-        server_thread.join(timeout=5)
-        assert not server_thread.is_alive()
-        service.stop(timeout=1)
 
 
 def test_sse_subscribe_registers_before_snapshot() -> None:

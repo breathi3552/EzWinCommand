@@ -45,11 +45,14 @@ class ControlController(
         }
     }
 
-    suspend fun sendMediaAction(subAction: String, value: Any? = null): CommandResult {
-        val params = linkedMapOf<String, Any?>("sub_action" to subAction)
-        when (subAction) {
-            "set_volume" -> params["volume"] = value
-            "set_output_device", "set_input_device" -> params["endpoint_id"] = value
+    suspend fun sendMediaAction(action: MediaAction): CommandResult {
+        val params: Map<String, Any?> = when (action) {
+            MediaAction.PlayPause -> mapOf("sub_action" to "play_pause")
+            MediaAction.Previous -> mapOf("sub_action" to "prev")
+            MediaAction.Next -> mapOf("sub_action" to "next")
+            is MediaAction.SetVolume -> mapOf("sub_action" to "set_volume", "volume" to action.volume)
+            is MediaAction.SetOutputDevice -> mapOf("sub_action" to "set_output_device", "endpoint_id" to action.endpointId)
+            is MediaAction.SetInputDevice -> mapOf("sub_action" to "set_input_device", "endpoint_id" to action.endpointId)
         }
         return when (val result = apiClient.executeCommand("media", params)) {
             is ApiResult.Success -> result.value
@@ -119,20 +122,6 @@ class ControlController(
         pendingStore?.allPending()?.forEach { trackPending(ActionCommand(it.action, it.params), scope, onResult) }
     }
     fun cancelTracking() { synchronized(trackingJobs) { trackingJobs.values.forEach { it.cancel() }; trackingJobs.clear() } }
-    companion object {
-        private val SSE_CONVERGED_MEDIA_ACTIONS = setOf(
-            "play_pause",
-            "prev",
-            "next",
-            "set_volume",
-            "set_output_device",
-            "set_input_device",
-        )
-
-        /** 已知媒体命令由 Server 的权威 SSE 收敛；未知扩展动作保留旧刷新兜底。 */
-        internal fun requiresImmediateMediaRefresh(subAction: String): Boolean =
-            subAction !in SSE_CONVERGED_MEDIA_ACTIONS
-    }
 
     override fun close() {
         cancelTracking()
@@ -143,14 +132,4 @@ class ControlController(
 }
 
 
-internal suspend fun sendMediaActionWithRefreshPolicy(
-    subAction: String,
-    value: Any?,
-    send: suspend (String, Any?) -> CommandResult,
-    refresh: () -> Unit,
-): CommandResult {
-    val result = send(subAction, value)
-    if (ControlController.requiresImmediateMediaRefresh(subAction)) refresh()
-    return result
-}
 private fun <T> ApiResult<T>.isAuthInvalid() = this is ApiResult.HttpError && (status==401||status==403)

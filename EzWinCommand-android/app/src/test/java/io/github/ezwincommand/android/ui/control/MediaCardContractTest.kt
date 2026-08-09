@@ -11,7 +11,7 @@ class MediaCardContractTest {
     @Test
     fun `three media icon buttons expose exact actions descriptions and touch targets`() {
         val specs = mediaButtonSpecs(true, MediaPlayback.PLAYING)
-        assertEquals(listOf("prev", "play_pause", "next"), specs.map { it.subAction })
+        assertEquals(listOf(MediaAction.Previous, MediaAction.PlayPause, MediaAction.Next), specs.map { it.action })
         assertEquals(listOf(R.string.media_previous, R.string.media_pause, R.string.media_next), specs.map { it.contentDescription })
         assertEquals(listOf(48, 56, 48), specs.map { it.touchTargetDp })
         assertTrue(specs.all { it.enabled })

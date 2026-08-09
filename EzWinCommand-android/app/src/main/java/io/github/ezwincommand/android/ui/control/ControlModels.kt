@@ -10,6 +10,15 @@ data class ActionCommand(
     val params: Map<String, Any?> = emptyMap(),
 )
 
+sealed interface MediaAction {
+    data object PlayPause : MediaAction
+    data object Previous : MediaAction
+    data object Next : MediaAction
+    data class SetVolume(val volume: Int, val gestureFinished: Boolean = true) : MediaAction
+    data class SetOutputDevice(val endpointId: String) : MediaAction
+    data class SetInputDevice(val endpointId: String) : MediaAction
+}
+
 sealed interface ControlUiState {
     data object Loading : ControlUiState
     data class Ready(

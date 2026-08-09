@@ -22,7 +22,7 @@ class MediaCommandRoutingTest {
             }
         }
         val controller = ControlController(client, onAuthInvalid = {})
-        controller.sendMediaAction("set_volume", 37)
+        controller.sendMediaAction(MediaAction.SetVolume(37))
         assertEquals("media", capturedAction)
         assertEquals(mapOf("sub_action" to "set_volume", "volume" to 37), capturedParams)
         assertEquals(2, capturedParams.size)
@@ -47,37 +47,27 @@ class MediaCommandRoutingTest {
         }
         val controller = ControlController(client, onAuthInvalid = {})
         val commands = listOf(
-            "play_pause" to null,
-            "prev" to null,
-            "next" to null,
-            "set_volume" to 37,
-            "set_output_device" to "output-id",
-            "set_input_device" to "input-id",
+            MediaAction.PlayPause to "play_pause",
+            MediaAction.Previous to "prev",
+            MediaAction.Next to "next",
+            MediaAction.SetVolume(37) to "set_volume",
+            MediaAction.SetOutputDevice("output-id") to "set_output_device",
+            MediaAction.SetInputDevice("input-id") to "set_input_device",
         )
 
-        commands.forEach { (subAction, value) ->
-            val result = sendMediaActionWithRefreshPolicy(
-                subAction = subAction,
-                value = value,
-                send = { action, argument -> controller.sendMediaAction(action, argument) },
-                refresh = { refreshes += 1 },
-            )
+        commands.forEach { (action, _) ->
+            val result = controller.sendMediaAction(action)
             assertTrue(result.success)
             assertEquals("ok", result.message)
         }
 
         assertEquals(
-            commands.map { "media" to it.first },
+            commands.map { "media" to it.second },
             sent,
         )
         assertEquals(0, refreshes)
         failSubAction = "set_volume"
-        val failed = sendMediaActionWithRefreshPolicy(
-            subAction = "set_volume",
-            value = 55,
-            send = { action, argument -> controller.sendMediaAction(action, argument) },
-            refresh = { refreshes += 1 },
-        )
+        val failed = controller.sendMediaAction(MediaAction.SetVolume(55))
         assertFalse(failed.success)
         assertEquals("媒体操作失败", failed.message)
         assertEquals(0, refreshes)
@@ -93,8 +83,8 @@ class MediaCommandRoutingTest {
             }
         }
         val controller = ControlController(client, onAuthInvalid = {})
-        controller.sendMediaAction("set_output_device", "output-id")
-        controller.sendMediaAction("set_input_device", "input-id")
+        controller.sendMediaAction(MediaAction.SetOutputDevice("output-id"))
+        controller.sendMediaAction(MediaAction.SetInputDevice("input-id"))
         assertEquals(
             listOf(
                 "media" to mapOf("sub_action" to "set_output_device", "endpoint_id" to "output-id"),

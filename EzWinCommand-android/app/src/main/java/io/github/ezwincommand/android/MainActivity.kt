@@ -44,9 +44,9 @@ import io.github.ezwincommand.android.ui.control.AndroidUiCoordinator
 import io.github.ezwincommand.android.ui.control.AndroidUiEffect
 import io.github.ezwincommand.android.ui.control.AndroidUiState
 import io.github.ezwincommand.android.ui.control.ControlController
-import io.github.ezwincommand.android.ui.control.sendMediaActionWithRefreshPolicy
 import io.github.ezwincommand.android.ui.control.ControlScreen
 import io.github.ezwincommand.android.ui.control.MediaConnectionController
+import io.github.ezwincommand.android.ui.control.MediaAction
 import io.github.ezwincommand.android.ui.control.MediaVolumeActor
 import io.github.ezwincommand.android.ui.control.ControlPageGate
 import io.github.ezwincommand.android.ui.control.mergeReadyWithMedia
@@ -628,14 +628,7 @@ class MainActivity : AppCompatActivity() {
                         lateinit var volumeActor: MediaVolumeActor
                         volumeActor = MediaVolumeActor(
                             scope = this,
-                            execute = {
-                                sendMediaActionWithRefreshPolicy(
-                                    subAction = "set_volume",
-                                    value = it,
-                                    send = { action, argument -> controller.sendMediaAction(action, argument) },
-                                    refresh = { mediaConnection?.refresh() },
-                                )
-                            },
+                            execute = { controller.sendMediaAction(MediaAction.SetVolume(it)) },
                             onLocalValue = screen::updateLocalVolume,
                             onConfirmed = { },
                             onFailure = { confirmed, message ->
@@ -701,31 +694,27 @@ class MainActivity : AppCompatActivity() {
         controlState: ControlUiState,
     ) {
         lateinit var actionInvoker: (ActionCommand) -> Unit
+        lateinit var mediaActionInvoker: (MediaAction) -> Unit
         lateinit var revokeInvoker: (String) -> Unit
         lateinit var renameInvoker: (String, String) -> Unit
         actionInvoker = { command ->
             lifecycleScope.launch {
-                val subAction = command.params["sub_action"] as? String
-                if (command.action == "media" && subAction == "set_volume") {
-                    val value = command.params["volume"] as Int
-                    if (command.params["finish"] == true) mediaVolumeActor?.finishGesture(value) else mediaVolumeActor?.submitVolume(value)
-                    return@launch
-                }
-                val result = if (command.action == "media" && subAction != null) {
-                    val value = command.params["endpoint_id"]
-                    sendMediaActionWithRefreshPolicy(
-                        subAction = subAction,
-                        value = value,
-                        send = { action, argument -> controller.sendMediaAction(action, argument) },
-                        refresh = { mediaConnection?.refresh() },
-                    )
-                } else {
-                    controller.sendAction(command)
-                }
+                val result = controller.sendAction(command)
                 showTopMessage(screen.showResult(result))
                 if (result.commandId != null && result.status != "succeeded" && result.status != "failed") {
                     controller.trackPending(command, lifecycleScope) { tracked -> runOnUiThread { showTopMessage(if (tracked.success) tracked.message else errorMessage(tracked.message)) } }
                 }
+                if (!result.success) showTopMessage(errorMessage(result.message))
+            }
+        }
+        mediaActionInvoker = { action ->
+            lifecycleScope.launch {
+                if (action is MediaAction.SetVolume) {
+                    if (action.gestureFinished) mediaVolumeActor?.finishGesture(action.volume) else mediaVolumeActor?.submitVolume(action.volume)
+                    return@launch
+                }
+                val result = controller.sendMediaAction(action)
+                showTopMessage(screen.showResult(result))
                 if (!result.success) showTopMessage(errorMessage(result.message))
             }
         }
@@ -745,7 +734,7 @@ class MainActivity : AppCompatActivity() {
                 showTopMessage(getString(R.string.control_revoke_success))
                 val refreshed = controller.load()
                 coordinator.updateControlState(serverId, baseUrl, refreshed)
-                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() })
+                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaActionInvoker)
             }
         }
         renameInvoker = { value, name ->
@@ -754,10 +743,10 @@ class MainActivity : AppCompatActivity() {
                 showTopMessage(if (renamed) getString(R.string.control_rename_device_success) else errorMessage(getString(R.string.control_rename_device_failed)))
                 val refreshed = controller.load()
                 coordinator.updateControlState(serverId, baseUrl, refreshed)
-                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() })
+                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaActionInvoker)
             }
         }
-        screen.render(controlState, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() })
+        screen.render(controlState, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaActionInvoker)
     }
 
     private fun returnToPairing(baseUrl: String) {
