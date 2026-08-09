@@ -70,6 +70,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     private var backToPairing: (() -> Unit)? = null
     private var refreshMedia: (() -> Unit)? = null
     private var devicesPopup: PopupWindow? = null
+    private var devicesPopupList: LinearLayout? = null
     private var deleteDialog: AlertDialog? = null
     private val contentScroll = ScrollView(context)
     private val header = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setBackgroundColor(color(R.color.ezwin_background)); setPadding(dp(12), dp(8), dp(12), dp(8)) }
@@ -145,7 +146,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         when (state) {
             ControlUiState.Loading -> renderActions(listOf(ActionPlugin("media", context.getString(R.string.media_title), "", "", emptyList())), state, onAction, onBackToPairing)
             is ControlUiState.Error -> { actionsContainer.removeAllViews(); actionsContainer.addView(emptyView(state.message)) }
-            is ControlUiState.Ready -> { currentDevices = state.devices; currentDeviceKey = state.currentDeviceKey; renderActions(state.actions, state, onAction, onBackToPairing) }
+            is ControlUiState.Ready -> { renderDevices(state.devices, state.currentDeviceKey, onRevokeDevice, onRenameDevice); renderActions(state.actions, state, onAction, onBackToPairing) }
         }
     }
 
@@ -305,9 +306,33 @@ class ControlScreen(context: Context) : FrameLayout(context) {
 
     private fun mediaButton(icon: Int, description: Int, enabled: Boolean, click: () -> Unit) = AppCompatImageButton(context).apply { setImageResource(icon); setBackgroundResource(R.drawable.media_icon_button); contentDescription = context.getString(description); isEnabled = enabled; alpha = if (enabled) 1f else .38f; setOnClickListener { click() } }
 
-    fun renderDevices(devices: List<DeviceInfo>, current: String?, revoke: (String) -> Unit, rename: (String, String) -> Unit) { currentDevices = devices; currentDeviceKey = current; revokeDevice = revoke; renameDevice = rename }
+    fun renderDevices(devices: List<DeviceInfo>, current: String?, revoke: (String) -> Unit, rename: (String, String) -> Unit) {
+        currentDevices = devices
+        currentDeviceKey = current
+        revokeDevice = revoke
+        renameDevice = rename
+        refreshDevicesPopup()
+    }
     private fun showDevicesPopup(anchor: View) {
         val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundResource(R.drawable.ez_panel); setPadding(dp(12)) }
+        devicesPopupList = list
+        renderDeviceRows(list)
+        devicesPopup = PopupWindow(list, dp(360), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+            setBackgroundDrawable(ColorDrawable(color(R.color.ezwin_panel)))
+            elevation = dp(8).toFloat()
+            setOnDismissListener { devicesPopupList = null }
+            showAsDropDown(anchor, -dp(312), 0)
+        }
+    }
+
+    private fun refreshDevicesPopup() {
+        devicesPopupList?.let(::renderDeviceRows)
+        if (devicesPopup?.isShowing == true) devicesPopup?.update()
+    }
+
+    private fun renderDeviceRows(list: LinearLayout) {
+        list.removeAllViews()
         if (currentDevices.isEmpty()) list.addView(metaText(context.getString(R.string.media_no_devices)))
         currentDevices.forEach { device ->
             val row = LinearLayout(context).apply {
@@ -333,7 +358,6 @@ class ControlScreen(context: Context) : FrameLayout(context) {
             }, LinearLayout.LayoutParams(dp(48), dp(48)))
             list.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        devicesPopup = PopupWindow(list, dp(360), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true; setBackgroundDrawable(ColorDrawable(color(R.color.ezwin_panel))); elevation = dp(8).toFloat(); showAsDropDown(anchor, -dp(312), 0) }
     }
     private fun deviceIconButton(viewId: Int, icon: Int, description: String, click: () -> Unit) = AppCompatImageButton(context).apply {
         id = viewId

@@ -233,6 +233,30 @@ class MediaControlScreenViewTest {
         assertTrue(revoked.isEmpty())
     }
 
+    @Test
+    fun `refreshing devices updates an already open device popup`() {
+        val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
+        val screen = ControlScreen(activity)
+        activity.setContentView(screen)
+        val initialDevices = listOf(
+            DeviceInfo("current", "我的手机", null, null),
+            DeviceInfo("other", "平板电脑", null, null),
+        )
+        screen.renderDevices(initialDevices, "current", {}, { _, _ -> })
+
+        screen.findViewById<View>(R.id.control_device_management).performClick()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val popup = screen.devicesPopupForTest()!!
+        assertEquals(2, findViews(popup.contentView) { it.id == R.id.control_device_row }.size)
+
+        screen.renderDevices(listOf(initialDevices[1]), null, {}, { _, _ -> })
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val rows = findViews(popup.contentView) { it.id == R.id.control_device_row }
+        assertEquals(1, rows.size)
+        assertEquals("平板电脑", findViews(rows.single()) { it is TextView && it.id != R.id.control_current_device_badge }.single().let { (it as TextView).text.toString() })
+    }
+
     private fun findViews(root: View, predicate: (View) -> Boolean): List<View> {
         val matches = mutableListOf<View>()
         fun visit(view: View) {
