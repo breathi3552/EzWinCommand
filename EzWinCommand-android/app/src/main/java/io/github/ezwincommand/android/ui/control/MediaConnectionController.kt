@@ -1,11 +1,14 @@
 package io.github.ezwincommand.android.ui.control
 
+import android.util.Log
 import io.github.ezwincommand.android.model.MediaState
 import io.github.ezwincommand.android.network.ApiResult
 import io.github.ezwincommand.android.network.EzApiClient
 import io.github.ezwincommand.android.network.MediaEventTermination
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +35,7 @@ class MediaConnectionController(
     private var loopJob: Job? = null
     private var eventConnection: Closeable? = null
     private var coverJob: Job? = null
+    private var recoveryJob: Job? = null
     private var loadedCoverPath: String? = null
     private var ownerIdentity: Any = this
     private var lastAppliedRevision = -1L
@@ -42,6 +46,7 @@ class MediaConnectionController(
         val generation = generationCounter.incrementAndGet()
         activeGeneration = generation
         lastAppliedRevision = -1L
+        loadedCoverPath = null
         loopJob = scope.launch { runConnectionLoop(generation, owner) }
     }
 
@@ -58,6 +63,8 @@ class MediaConnectionController(
 
     private fun invalidate() {
         activeGeneration = generationCounter.incrementAndGet()
+        recoveryJob?.cancel()
+        recoveryJob = null
         eventConnection?.close()
         eventConnection = null
         coverJob?.cancel()
@@ -97,18 +104,56 @@ class MediaConnectionController(
                 continue
             }
             applyState(generation, owner, state)
-            val termination = kotlinx.coroutines.CompletableDeferred<MediaEventTermination>()
+            val termination = CompletableDeferred<MediaEventTermination>()
+            var recoveryGate: CompletableDeferred<Boolean>? = null
             eventConnection = apiClient.openMediaEvents(
                 since = state.revision,
                 onEvent = { incoming ->
+                    val gate = recoveryGate
                     scope.launch(mainDispatcher) {
+                        if (gate?.await() == false) return@launch
                         if (isCurrent(generation, owner)) applyStateOnMain(generation, owner, incoming)
                     }
                 },
                 onClosed = { reason -> termination.complete(reason) },
-                onOpen = { scope.launch { applyRefresh(generation, owner) } },
+                onOpen = {
+                    if (isCurrent(generation, owner)) {
+                        recoveryGate?.complete(false)
+                        recoveryJob?.cancel()
+                        val gate = CompletableDeferred<Boolean>()
+                        recoveryGate = gate
+                        recoveryJob = scope.launch {
+                            val outcome = try {
+                                applyRefresh(generation, owner, reportErrors = false)
+                            } catch (cancelled: CancellationException) {
+                                gate.complete(false)
+                                throw cancelled
+                            } catch (error: Throwable) {
+                                Log.e(TAG, "event=media_recovery_failed", error)
+                                RefreshOutcome.Retry
+                            }
+                            gate.complete(outcome == RefreshOutcome.Applied)
+                            if (outcome != RefreshOutcome.Applied && isCurrent(generation, owner)) {
+                                val reason = if (outcome == RefreshOutcome.AuthInvalid) {
+                                    MediaEventTermination.ClosedByCaller
+                                } else {
+                                    MediaEventTermination.NetworkError("媒体恢复失败")
+                                }
+                                termination.complete(reason)
+                                eventConnection?.close()
+                            }
+                        }
+                    }
+                },
             )
-            val reason = termination.await()
+            val reason = try {
+                termination.await()
+            } finally {
+                recoveryJob?.cancel()
+                recoveryJob = null
+                recoveryGate?.complete(false)
+                recoveryGate = null
+            }
             eventConnection = null
             when (reason) {
                 MediaEventTermination.ClosedByCaller -> return
@@ -129,16 +174,27 @@ class MediaConnectionController(
         }
     }
 
-    private suspend fun applyRefresh(generation: Long, owner: Any) {
-        when (val refreshed = apiClient.refreshMediaState()) {
-            is ApiResult.Success -> applyState(generation, owner, refreshed.value)
+    private suspend fun applyRefresh(generation: Long, owner: Any, reportErrors: Boolean = true): RefreshOutcome {
+        return when (val refreshed = apiClient.refreshMediaState()) {
+            is ApiResult.Success -> {
+                applyState(generation, owner, refreshed.value)
+                RefreshOutcome.Applied
+            }
             is ApiResult.HttpError -> if (refreshed.status == 401 || refreshed.status == 403) {
                 onMain(generation, owner) { onAuthInvalid() }
+                RefreshOutcome.AuthInvalid
             } else {
-                onMain(generation, owner) { onError(refreshed.message) }
+                if (reportErrors) onMain(generation, owner) { onError(refreshed.message) }
+                RefreshOutcome.Retry
             }
-            is ApiResult.NetworkError -> onMain(generation, owner) { onError(refreshed.message) }
-            is ApiResult.ParseError -> onMain(generation, owner) { onError(refreshed.message) }
+            is ApiResult.NetworkError -> {
+                if (reportErrors) onMain(generation, owner) { onError(refreshed.message) }
+                RefreshOutcome.Retry
+            }
+            is ApiResult.ParseError -> {
+                if (reportErrors) onMain(generation, owner) { onError(refreshed.message) }
+                RefreshOutcome.Retry
+            }
         }
     }
 
@@ -191,9 +247,15 @@ class MediaConnectionController(
     private suspend fun onMain(generation: Long, owner: Any, block: () -> Unit) {
         withContext(mainDispatcher) { if (isCurrent(generation, owner)) block() }
     }
+    private enum class RefreshOutcome {
+        Applied,
+        Retry,
+        AuthInvalid,
+    }
 
     companion object {
         internal fun backoffMillis(retry: Int): Long = (1_000L shl retry.coerceAtMost(3)).coerceAtMost(8_000L)
+        private const val TAG = "MediaConnectionController"
         private const val ARTWORK_ATTEMPTS = 3
     }
 }

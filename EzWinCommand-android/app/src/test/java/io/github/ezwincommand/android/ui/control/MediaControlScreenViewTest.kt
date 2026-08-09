@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import io.github.ezwincommand.android.model.ActionPlugin
 import io.github.ezwincommand.android.model.AudioEndpoint
 import io.github.ezwincommand.android.model.MediaState
+import io.github.ezwincommand.android.model.MediaPlayback
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -111,6 +112,83 @@ class MediaControlScreenViewTest {
         assertTrue(output.isEnabled)
     }
 
+
+    @Test
+    fun `last media snapshot keeps controls usable during silent recovery`() {
+        val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
+        val screen = ControlScreen(activity)
+        activity.setContentView(screen)
+        val media = MediaState.LOADING.copy(
+            revision = 8,
+            available = true,
+            title = "当前标题",
+            artist = "当前艺术家",
+            playback = MediaPlayback.PLAYING,
+            volume = 42,
+            renderDevices = listOf(AudioEndpoint("output", "当前输出")),
+            captureDevices = listOf(AudioEndpoint("input", "当前输入")),
+            selectedRenderId = "output",
+            selectedCaptureId = "input",
+        )
+        var refreshes = 0
+        screen.render(
+            ControlUiState.Ready(
+                listOf(ActionPlugin("media", "媒体", "", "", emptyList())),
+                emptyList(),
+                media = media,
+                mediaLoading = false,
+            ),
+            {},
+            {},
+            { _, _ -> },
+            {},
+            { refreshes++ },
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals("当前输出", screen.mediaSelectorsForTest().first!!.text)
+        assertTrue(screen.mediaSelectorsForTest().first!!.isEnabled)
+        val pause = findViews(screen) {
+            it is ImageButton && it.contentDescription == activity.getString(R.string.media_pause)
+        }.single()
+        assertTrue(pause.isEnabled)
+        findViews(screen) {
+            it.contentDescription == activity.getString(R.string.media_refresh)
+        }.single().performClick()
+        assertEquals(1, refreshes)
+    }
+
+    @Test
+    fun `initial media loading and existing error presentation remain unchanged`() {
+        val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
+        val screen = ControlScreen(activity)
+        activity.setContentView(screen)
+        val loading = ControlUiState.Ready(
+            listOf(ActionPlugin("media", "媒体", "", "", emptyList())),
+            emptyList(),
+            media = MediaState.LOADING,
+            mediaLoading = true,
+        )
+
+        screen.render(loading, {}, {}, { _, _ -> }, {})
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertTrue(
+            findViews(screen) {
+                it is TextView && it.text.toString() == activity.getString(R.string.media_loading)
+            }.isNotEmpty(),
+        )
+        assertEquals(activity.getString(R.string.media_devices_loading), screen.mediaSelectorsForTest().first!!.text)
+        assertFalse(screen.mediaSelectorsForTest().first!!.isEnabled)
+
+        screen.updateMediaStateExcludingVolume(
+            loading.copy(media = MediaState.LOADING.copy(error = "媒体服务不可用"), mediaLoading = false),
+        )
+        val error = findViews(screen) {
+            it is TextView && it.text.toString() == "媒体服务不可用"
+        }.single()
+        assertEquals(View.VISIBLE, error.visibility)
+    }
 
     @Test
     fun `device popup uses icon actions current badge and delete confirmation`() {
