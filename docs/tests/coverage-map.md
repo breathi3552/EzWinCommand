@@ -11,7 +11,7 @@
 | 本地管理安全边界 | 配对码和设备管理只对 PC 本机开放；管理事件不携带敏感值；断线后以权威快照恢复 | Server interface + Web browser | 接口与静态契约有覆盖；真实浏览器断线及多配对卡交互仍需 UI 验证 |
 | 插件加载与启用边界 | 只有已启用且成功加载的本地受信任插件动作可执行；单个插件失败不破坏其他能力 | Server interface | 自动化应覆盖禁用、加载失败和动作可见性；远程插件分发不属于验收范围 |
 | 异步命令生命周期 | 任务所有者隔离、重复提交收敛、重启和过期产生明确状态，公开结果不泄露内部诊断 | Server/Web/Android contract | 自动化覆盖 Server 与客户端状态；真实浏览器 soft timeout 和 Android 断网恢复仍需 E2E |
-| 媒体启动与恢复 | Windows 媒体初始化、超时、迟到成功和重建不能阻断基础 HTTP；资源只按所属生命周期关闭 | Server unit/interface + Windows environment | 自动化覆盖生命周期；真实 GSMTC/Core Audio 故障恢复仍需环境验证 |
+| 媒体启动与恢复 | Windows 媒体初始化、超时、迟到成功和重建不能阻断基础 HTTP；资源只按所属生命周期关闭 | Server unit/interface + Windows environment | Automated：覆盖事件驱动 idle、初始化超时与可取消指数退避、adapter 清理，以及媒体失败时 HTTP、设备和动作 API 仍可用；真实 GSMTC/Core Audio 故障恢复仍需环境验证 |
 | 媒体快照与事件同步 | Snapshot 与 SSE 之间不丢变化；修订号单调；慢客户端和断线恢复得到最新状态；旧封面不能回写 | Cross-platform contract + UI/E2E | Server/Android 自动化覆盖主要状态；真实播放器、封面与长时间断线仍需环境验证 |
 | 音频设备控制 | 没有活动媒体时音量和输入、输出设备仍可控制；平台回调只更新相关状态且设备切换后继续有效 | Server unit/interface + Windows environment | 替身覆盖接口；真实 Core Audio 设备、角色与 callback 重绑定仍需环境验证 |
 | 电竞模式进入与退出 | 进入按受控顺序执行并在首个失败处停止；退出恢复音频并只关闭受管进程，不结束游戏平台 | Server unit + Windows environment | 自动化覆盖顺序与失败停止；YY、Steam、CS2 和真实音频设备的完整链路待环境验证 |

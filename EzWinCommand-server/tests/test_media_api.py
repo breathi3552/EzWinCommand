@@ -78,6 +78,8 @@ def test_hanging_media_service_lifespan_ping() -> None:
     try:
         with TestClient(create_app(service)) as client:
             assert client.get("/ping").status_code == 200
+            assert client.get("/api/actions").status_code == 200
+            assert client.get("/api/devices").status_code == 200
         gate.set()
         service.stop(timeout=1.0)
         assert service._thread is None

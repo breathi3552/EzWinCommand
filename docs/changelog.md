@@ -1,5 +1,11 @@
 # EzWinCommand 变更日志
 
+## 2026-08-09
+
+### 变更
+
+- Windows media integration 在空闲时仅等待真实 dirty event；初始化失败使用可取消且有上限的指数退避，媒体恢复和关闭不会阻断基础 HTTP，并清理 adapter 与待处理刷新。
+
 ## 2026-08-08
 
 ### 变更

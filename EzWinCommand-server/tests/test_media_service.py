@@ -4,6 +4,7 @@ import asyncio
 import ctypes
 import sys
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 
 from media.service import AudioEndpoint, MediaService, _AudioReading, _MediaReading, _WindowsPlatformAdapter
@@ -56,6 +57,21 @@ class FakeAdapter:
         self.close_count += 1
         self.closed = True
 
+def _wait_for_initial_state(service: MediaService, timeout: float = 3.0):
+    deadline = time.monotonic() + timeout
+    while service.snapshot().revision == 0 and time.monotonic() < deadline:
+        threading.Event().wait(0.02)
+    state = service.snapshot()
+    assert state.revision > 0
+    assert state.error is None
+    return state
+
+def _wait_for_error(service: MediaService, message: str, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while service.snapshot().error != message and time.monotonic() < deadline:
+        threading.Event().wait(0.02)
+    assert service.snapshot().error == message
+
 
 def test_initialize_hang_is_bounded_and_submit_unavailable() -> None:
     started = threading.Event()
@@ -70,14 +86,13 @@ def test_initialize_hang_is_bounded_and_submit_unavailable() -> None:
     service.start()
     try:
         assert started.wait(1)
-        assert service.snapshot().error == "媒体服务初始化超时"
+        _wait_for_error(service, "媒体服务初始化超时")
         assert service.submit("play").result(timeout=0.2).message == "媒体服务不可用"
     finally:
         service.stop(timeout=1.0)
     assert adapter.closed is True
     assert adapter.close_count == 1
     assert adapter.close_threads == ["EzMediaLoop"]
-
 def test_initialize_late_completion_recovers_without_restart() -> None:
     attempts = 0
 
@@ -89,19 +104,20 @@ def test_initialize_late_completion_recovers_without_restart() -> None:
                 await asyncio.Event().wait()
 
     adapters: list[RetryAdapter] = []
+
     def make_adapter() -> RetryAdapter:
         adapter = RetryAdapter()
         adapters.append(adapter)
         return adapter
+
     service = MediaService(make_adapter)
     service.start()
     try:
-        assert service.snapshot().error == "媒体服务初始化超时"
+        _wait_for_error(service, "媒体服务初始化超时")
         assert service.submit("play").result(timeout=0.2).success is False
-        for _ in range(30):
-            if service.snapshot().error is None and service.snapshot().available:
-                break
-            threading.Event().wait(0.1)
+        deadline = time.monotonic() + 8
+        while not (service.snapshot().error is None and service.snapshot().available) and time.monotonic() < deadline:
+            threading.Event().wait(0.05)
         assert attempts >= 2
         assert service.snapshot().error is None
         assert service.submit("play").result(timeout=1).success is True
@@ -109,6 +125,104 @@ def test_initialize_late_completion_recovers_without_restart() -> None:
         service.stop(timeout=1.0)
     assert len(adapters) >= 2
     assert all(item.close_count == 1 for item in adapters)
+def test_initialization_retry_is_cancellable_without_hot_retry(monkeypatch) -> None:
+    attempts = 0
+    first_attempt = threading.Event()
+    retry_started = threading.Event()
+    adapters: list[FakeAdapter] = []
+
+    async def blocking_sleep(_delay_seconds: float) -> None:
+        retry_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(media_service_module.asyncio, "sleep", blocking_sleep)
+
+    class FailingAdapter(FakeAdapter):
+        async def initialize(self, notify) -> None:
+            nonlocal attempts
+            attempts += 1
+            first_attempt.set()
+            raise RuntimeError("初始化失败")
+
+    def make_adapter() -> FailingAdapter:
+        adapter = FailingAdapter()
+        adapters.append(adapter)
+        return adapter
+
+    service = MediaService(make_adapter)
+    service.start()
+    try:
+        assert first_attempt.wait(1)
+        assert retry_started.wait(1)
+        assert attempts == 1
+    finally:
+        service.stop(timeout=1.0)
+    assert all(adapter.close_count == 1 for adapter in adapters)
+
+def test_retry_initialization_timeout_is_applied_to_each_attempt(monkeypatch) -> None:
+    monkeypatch.setattr(media_service_module, "STARTUP_DEADLINE", 0.05)
+    monkeypatch.setattr(media_service_module, "RETRY_INITIAL_DELAY", 0.01)
+    monkeypatch.setattr(media_service_module, "RETRY_MAX_DELAY", 0.02)
+    attempts = 0
+    third_attempt = threading.Event()
+    adapters: list[FakeAdapter] = []
+
+    class HangingAdapter(FakeAdapter):
+        async def initialize(self, notify) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 3:
+                third_attempt.set()
+            await asyncio.Event().wait()
+
+    def make_adapter() -> HangingAdapter:
+        adapter = HangingAdapter()
+        adapters.append(adapter)
+        return adapter
+
+    service = MediaService(make_adapter)
+    service.start()
+    try:
+        assert third_attempt.wait(1)
+        assert attempts >= 3
+    finally:
+        service.stop(timeout=1.0)
+    assert all(adapter.close_count == 1 for adapter in adapters)
+
+
+def test_retry_backoff_grows_and_caps(monkeypatch) -> None:
+    delays: list[float] = []
+    enough_delays = threading.Event()
+    adapters: list[FakeAdapter] = []
+
+    async def fake_sleep(delay_seconds: float) -> None:
+        delays.append(delay_seconds)
+        if len(delays) >= 7:
+            enough_delays.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(media_service_module.asyncio, "sleep", fake_sleep)
+
+    class FailingAdapter(FakeAdapter):
+        async def initialize(self, notify) -> None:
+            raise RuntimeError("初始化失败")
+
+    def make_adapter() -> FailingAdapter:
+        adapter = FailingAdapter()
+        adapters.append(adapter)
+        return adapter
+
+    service = MediaService(make_adapter)
+    service.start()
+    try:
+        assert enough_delays.wait(1)
+        assert len(delays) >= 7
+        assert all(delays[index] < delays[index + 1] for index in range(5))
+        assert delays[5] == delays[6]
+    finally:
+        service.stop(timeout=1.0)
+    assert all(adapter.close_count == 1 for adapter in adapters)
+
 
 def test_stop_before_start_and_repeat_stop() -> None:
     service = MediaService(FakeAdapter)
@@ -143,8 +257,8 @@ def test_initialize_does_not_wait_for_first_refresh_and_refresh_can_finish_late(
     service = MediaService(lambda: adapter)
     service.start()
     try:
-        assert service.snapshot().error is None
         assert refresh_started.wait(1)
+        assert service.snapshot().error is None
         assert service.snapshot().available is False
         gate.set()
         for _ in range(30):
@@ -160,6 +274,7 @@ def test_command_waits_for_post_command_refresh_without_polling() -> None:
     adapter = FakeAdapter()
     service = MediaService(lambda: adapter)
     service.start()
+    _wait_for_initial_state(service)
     try:
         result = service.submit("play_pause").result(timeout=1)
         assert result.success is True
@@ -255,6 +370,7 @@ def test_explicit_dirty_full_domain_failures_preserve_state_and_log_error() -> N
     adapter = FailingAfterBootstrap()
     service = MediaService(lambda: adapter)
     service.start()
+    _wait_for_initial_state(service)
     try:
         service.request_refresh({"devices", "audio", "media"}).result(timeout=1)
         adapter.fail = True
@@ -280,6 +396,7 @@ def test_idle_service_does_not_read_again_until_dirty() -> None:
     adapter = CountingAdapter()
     service = MediaService(lambda: adapter)
     service.start()
+    _wait_for_initial_state(service)
     try:
         service.request_refresh({"devices", "audio", "media"}).result(timeout=1)
         reads = adapter.media_reads, adapter.audio_reads
@@ -311,6 +428,7 @@ def test_refresh_waiter_completes_before_artwork_and_same_generation_reads_once(
     adapter = SlowArtwork()
     service = MediaService(lambda: adapter)
     service.start()
+    _wait_for_initial_state(service)
     try:
         state = service.request_refresh({"devices", "audio", "media", "artwork"}).result(timeout=1)
         assert state.title == "Song"
@@ -341,6 +459,7 @@ def test_old_artwork_cannot_overwrite_new_media() -> None:
     adapter = SwitchingArtwork()
     service = MediaService(lambda: adapter)
     service.start()
+    _wait_for_initial_state(service)
     try:
         service.request_refresh({"media", "artwork"}).result(timeout=1)
         adapter.media = _MediaReading(True, "Song B", "Artist", "playing", source_app_user_model_id="player")
@@ -898,6 +1017,7 @@ def test_volume_callback_notify_marks_only_audio_dirty_and_publishes_volume_revi
     observed: list = []
     remove = service.add_listener(observed.append)
     service.start()
+    _wait_for_initial_state(service)
     try:
         service.request_refresh({"devices", "audio", "media"}).result(timeout=1)
         before = service.snapshot()

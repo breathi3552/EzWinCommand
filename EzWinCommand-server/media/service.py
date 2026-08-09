@@ -17,6 +17,8 @@ from plugins.base import CommandResult
 logger = logging.getLogger(__name__)
 MAX_ARTWORK_BYTES = 5 * 1024 * 1024
 STARTUP_DEADLINE = 2.0
+RETRY_INITIAL_DELAY = 1.0
+RETRY_MAX_DELAY = 30.0
 REPLAY_WINDOW = 64
 RUNTIME_FAILURE_THRESHOLD = 3
 Playback = Literal["playing", "paused", "stopped", "none"]
@@ -504,7 +506,6 @@ class MediaService:
         self._media_generation = 0
         self._artwork_generation_read: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._readiness_decision = threading.Event()
         self._media_ready = threading.Event()
         self._stop_signal = threading.Event()
         self._stop_requested: asyncio.Event | None = None
@@ -513,15 +514,19 @@ class MediaService:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
-        self._readiness_decision.clear(); self._media_ready.clear(); self._stop_signal.clear()
+        self._media_ready.clear()
+        self._stop_signal.clear()
         self._thread = threading.Thread(target=self._thread_main, name="EzMediaLoop", daemon=True)
-        self._thread.start(); self._readiness_decision.wait(STARTUP_DEADLINE + 0.2)
+        self._thread.start()
 
     def _thread_main(self) -> None:
-        loop = asyncio.new_event_loop(); self._loop = loop
-        try: loop.run_until_complete(self._run())
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        try:
+            loop.run_until_complete(self._run())
         except Exception:
-            logger.exception("媒体服务线程异常退出"); self._publish_error("媒体服务启动失败"); self._readiness_decision.set()
+            logger.exception("媒体服务线程异常退出")
+            self._publish_error("媒体服务启动失败")
         finally:
             loop.close()
             self._loop = None
@@ -532,13 +537,13 @@ class MediaService:
         if self._stop_signal.is_set():
             self._stop_requested.set()
         stop_task = asyncio.create_task(self._stop_requested.wait())
-        first_attempt = True
+        retry_delay = RETRY_INITIAL_DELAY
         try:
             while not stop_task.done():
                 attempt = asyncio.create_task(self._bootstrap())
                 done, _ = await asyncio.wait(
                     {attempt, stop_task},
-                    timeout=STARTUP_DEADLINE if first_attempt else None,
+                    timeout=STARTUP_DEADLINE,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if stop_task in done:
@@ -547,20 +552,19 @@ class MediaService:
                     break
                 if attempt not in done:
                     self._publish_error("媒体服务初始化超时")
-                    self._readiness_decision.set()
-                    first_attempt = False
                     attempt.cancel()
                     await asyncio.gather(attempt, return_exceptions=True)
-                    if await self._retry_sleep(stop_task):
+                    stopped, retry_delay = await self._wait_for_retry(stop_task, retry_delay)
+                    if stopped:
                         break
                     continue
-                first_attempt = False
                 if attempt.cancelled() or attempt.exception() is not None:
-                    if await self._retry_sleep(stop_task):
+                    stopped, retry_delay = await self._wait_for_retry(stop_task, retry_delay)
+                    if stopped:
                         break
                     continue
+                retry_delay = RETRY_INITIAL_DELAY
                 self._media_ready.set()
-                self._readiness_decision.set()
                 self._publish_error(None)
                 self._mark_dirty({"devices", "audio", "media", "artwork"})
                 worker = asyncio.create_task(self._dirty_worker())
@@ -572,7 +576,8 @@ class MediaService:
                 await worker
                 self._media_ready.clear()
                 await self._close_adapter()
-                if await self._retry_sleep(stop_task):
+                stopped, retry_delay = await self._wait_for_retry(stop_task, retry_delay)
+                if stopped:
                     break
         finally:
             stop_task.cancel()
@@ -580,6 +585,11 @@ class MediaService:
             if self._artwork_task is not None:
                 self._artwork_task.cancel()
                 await asyncio.gather(self._artwork_task, return_exceptions=True)
+            for _, waiter in self._refresh_waiters:
+                if not waiter.done():
+                    waiter.set_exception(RuntimeError("媒体服务不可用"))
+            self._refresh_waiters.clear()
+            self._dirty.clear()
             self._media_ready.clear()
             await self._close_adapter()
 
@@ -593,8 +603,9 @@ class MediaService:
         except Exception:
             logger.exception("释放媒体平台对象失败: operation=close")
 
-    async def _retry_sleep(self, stop_task: asyncio.Task[bool]) -> bool:
-        delay = asyncio.create_task(asyncio.sleep(0.1))
+    async def _retry_sleep(self, stop_task: asyncio.Task[bool], delay_seconds: float) -> bool:
+        logger.warning("媒体服务将在 %.1f 秒后重试", delay_seconds)
+        delay = asyncio.create_task(asyncio.sleep(delay_seconds))
         done, _ = await asyncio.wait({delay, stop_task}, return_when=asyncio.FIRST_COMPLETED)
         if stop_task in done:
             delay.cancel()
@@ -602,10 +613,17 @@ class MediaService:
             return True
         return False
 
+    async def _wait_for_retry(self, stop_task: asyncio.Task[bool], delay_seconds: float) -> tuple[bool, float]:
+        stopped = await self._retry_sleep(stop_task, delay_seconds)
+        if stopped:
+            return True, delay_seconds
+        return False, min(delay_seconds * 2, RETRY_MAX_DELAY)
+
     async def _bootstrap(self) -> None:
-        adapter = self._adapter_factory()
+        adapter: _PlatformAdapter | None = None
         installed = False
         try:
+            adapter = self._adapter_factory()
             logger.info("媒体服务阶段开始: operation=initialize")
             await adapter.initialize(self._schedule_refresh)
             if self._stop_requested is not None and self._stop_requested.is_set():
@@ -618,11 +636,12 @@ class MediaService:
             logger.exception("媒体服务初始化失败: operation=initialize")
             raise
         finally:
-            if not installed:
+            if not installed and adapter is not None:
                 try:
                     await adapter.close()
                 except Exception:
                     logger.exception("释放失败的媒体 adapter 失败")
+
 
     def _schedule_refresh(self, domains: set[str] | None = None) -> None:
         loop = self._loop
