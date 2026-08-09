@@ -1,5 +1,6 @@
 package io.github.ezwincommand.android.ui.control
 
+import io.github.ezwincommand.android.model.MediaState
 import io.github.ezwincommand.android.model.ActionPlugin
 import io.github.ezwincommand.android.model.CommandResult
 import io.github.ezwincommand.android.model.DeviceInfo
@@ -24,6 +25,18 @@ class ControlControllerTest {
         state as ControlUiState.Ready
         assertTrue(state.actions.isEmpty())
         assertTrue(state.devices.isEmpty())
+    }
+
+    @Test
+    fun `keeps loading while server returns provisional revision zero snapshot`() = runBlocking {
+        val provisional = MediaState.LOADING.copy(error = "媒体服务正在初始化")
+        val state = ControlController(
+            fakeClient(mediaResult = ApiResult.Success(provisional)),
+            onAuthInvalid = {},
+        ).load() as ControlUiState.Ready
+
+        assertTrue(state.mediaLoading)
+        assertEquals(MediaState.LOADING, state.media)
     }
 
     @Test
@@ -150,8 +163,10 @@ class ControlControllerTest {
         devices: List<DeviceInfo> = listOf(DeviceInfo("k", "手机", null, null)),
         commandResult: CommandResult = CommandResult(true, "ok", emptyMap()),
         httpStatus: Int? = null,
+        mediaResult: ApiResult<MediaState> = ApiResult.NetworkError("media unavailable"),
     ): EzApiClient {
         return object : EzApiClient("http://192.168.1.10:8080", deviceKeyProvider = { "k" }) {
+            override suspend fun getMediaState(): ApiResult<MediaState> = mediaResult
             override suspend fun listActions(): ApiResult<List<ActionPlugin>> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(actions)
             override suspend fun listDevices(): ApiResult<List<DeviceInfo>> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(devices)
             override suspend fun executeCommand(action: String, params: Map<String, Any?>): ApiResult<CommandResult> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(commandResult)

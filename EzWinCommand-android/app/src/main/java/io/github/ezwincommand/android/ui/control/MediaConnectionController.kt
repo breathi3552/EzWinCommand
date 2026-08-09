@@ -176,7 +176,9 @@ class MediaConnectionController(
 
     private suspend fun applyRefresh(generation: Long, owner: Any, reportErrors: Boolean = true): RefreshOutcome {
         return when (val refreshed = apiClient.refreshMediaState()) {
-            is ApiResult.Success -> {
+            is ApiResult.Success -> if (refreshed.value.revision == 0L) {
+                RefreshOutcome.Retry
+            } else {
                 applyState(generation, owner, refreshed.value)
                 RefreshOutcome.Applied
             }
@@ -205,7 +207,7 @@ class MediaConnectionController(
     }
 
     private fun applyStateOnMain(generation: Long, owner: Any, state: MediaState) {
-        if (!isCurrent(generation, owner) || state.revision < lastAppliedRevision) return
+        if (!isCurrent(generation, owner) || state.revision == 0L || state.revision < lastAppliedRevision) return
         lastAppliedRevision = state.revision
         onState(state)
         val path = state.cover

@@ -24,6 +24,7 @@ class ControlController(
         val a = apiClient.listActions()
         val d = apiClient.listDevices()
         val media = apiClient.getMediaState()
+        val authoritativeMedia = (media as? ApiResult.Success)?.value?.takeIf { it.revision > 0L }
         return when {
             a.isAuthInvalid() || d.isAuthInvalid() || media.isAuthInvalid() -> {
                 onAuthInvalid()
@@ -33,8 +34,8 @@ class ControlController(
                 actions = a.value,
                 devices = d.value,
                 currentDeviceKey = currentDeviceKeyProvider()?.trim()?.takeIf { it.isNotEmpty() },
-                media = (media as? ApiResult.Success)?.value ?: io.github.ezwincommand.android.model.MediaState.LOADING,
-                mediaLoading = media !is ApiResult.Success,
+                media = authoritativeMedia ?: io.github.ezwincommand.android.model.MediaState.LOADING,
+                mediaLoading = authoritativeMedia == null,
             )
             a is ApiResult.HttpError -> ControlUiState.Error(a.message, false)
             d is ApiResult.HttpError -> ControlUiState.Error(d.message, false)

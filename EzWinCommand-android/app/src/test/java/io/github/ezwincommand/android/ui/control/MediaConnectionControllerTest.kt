@@ -156,6 +156,48 @@ class MediaConnectionControllerTest {
     }
 
     @Test
+    fun `ignores provisional revision zero until an authoritative snapshot arrives`() = runTest {
+        val applied = mutableListOf<Long>()
+        var eventCallback: ((MediaState) -> Unit)? = null
+        var requestedSince = -1L
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
+            override suspend fun getMediaState(): ApiResult<MediaState> =
+                ApiResult.Success(MediaState.LOADING.copy(error = "媒体服务正在初始化"))
+
+            override fun openMediaEvents(
+                since: Long,
+                onEvent: (MediaState) -> Unit,
+                onClosed: (MediaEventTermination) -> Unit,
+                onOpen: () -> Unit,
+            ): Closeable {
+                requestedSince = since
+                eventCallback = onEvent
+                return Closeable { }
+            }
+        }
+        val controller = MediaConnectionController(
+            client,
+            "http://127.0.0.1:8080",
+            this,
+            StandardTestDispatcher(testScheduler),
+            onState = { applied += it.revision },
+            onArtwork = { _, _ -> },
+            onError = {},
+            onAuthInvalid = {},
+        )
+
+        controller.start("owner")
+        runCurrent()
+        assertEquals(0L, requestedSince)
+        assertTrue(applied.isEmpty())
+
+        eventCallback!!(MediaState.LOADING.copy(revision = 1))
+        runCurrent()
+        assertEquals(listOf(1L), applied)
+        controller.close()
+    }
+
+    @Test
     fun `new owner generation drops old callbacks and reloads unchanged cover path for new owner`() = runTest {
         val eventCallbacks = mutableListOf<(MediaState) -> Unit>()
         val closedCallbacks = mutableListOf<(MediaEventTermination) -> Unit>()
