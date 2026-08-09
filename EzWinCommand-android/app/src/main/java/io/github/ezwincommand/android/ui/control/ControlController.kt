@@ -119,11 +119,18 @@ class ControlController(
     }
     fun cancelTracking() { synchronized(trackingJobs) { trackingJobs.values.forEach { it.cancel() }; trackingJobs.clear() } }
     companion object {
-        private val PLAYBACK_MEDIA_ACTIONS = setOf("play_pause", "prev", "next")
+        private val SSE_CONVERGED_MEDIA_ACTIONS = setOf(
+            "play_pause",
+            "prev",
+            "next",
+            "set_volume",
+            "set_output_device",
+            "set_input_device",
+        )
 
-        /** 播放命令等待 Server 的权威快照/SSE，其他媒体命令暂沿用当前刷新路径。 */
+        /** 已知媒体命令由 Server 的权威 SSE 收敛；未知扩展动作保留旧刷新兜底。 */
         internal fun requiresImmediateMediaRefresh(subAction: String): Boolean =
-            subAction !in PLAYBACK_MEDIA_ACTIONS
+            subAction !in SSE_CONVERGED_MEDIA_ACTIONS
     }
 
     override fun close() {
@@ -133,6 +140,7 @@ class ControlController(
     suspend fun revokeDevice(deviceKey:String): Boolean = when(val r=apiClient.revokeDevice(deviceKey)) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
     suspend fun renameDevice(deviceKey:String,name:String): Boolean = if(name.trim().isEmpty()) false else when(val r=apiClient.renameDevice(deviceKey,name.trim())) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
 }
+
 
 internal suspend fun sendMediaActionWithRefreshPolicy(
     subAction: String,

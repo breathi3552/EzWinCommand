@@ -4,8 +4,9 @@ import io.github.ezwincommand.android.model.CommandResult
 import io.github.ezwincommand.android.network.ApiResult
 import io.github.ezwincommand.android.network.EzApiClient
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaCommandRoutingTest {
@@ -27,46 +28,59 @@ class MediaCommandRoutingTest {
         assertEquals(2, capturedParams.size)
     }
     @Test
-    fun `playback commands keep feedback and skip post-command refresh`() = runBlocking {
-        val playbackActions = listOf("play_pause", "prev", "next")
-        val sent = mutableListOf<Pair<String, Any?>>()
+    fun `media commands keep wire feedback and do not request post-command refresh`() = runBlocking {
+        val sent = mutableListOf<Pair<String, String>>()
         var refreshes = 0
+        var failSubAction: String? = null
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "key" }) {
+            override suspend fun executeCommand(action: String, params: Map<String, Any?>): ApiResult<CommandResult> {
+                val subAction = params["sub_action"] as String
+                sent += action to subAction
+                val failed = subAction == failSubAction
+                return ApiResult.Success(CommandResult(!failed, if (failed) "媒体操作失败" else "ok", emptyMap()))
+            }
 
-        playbackActions.forEach { subAction ->
+            override suspend fun refreshMediaState(): ApiResult<io.github.ezwincommand.android.model.MediaState> {
+                refreshes += 1
+                return ApiResult.Success(io.github.ezwincommand.android.model.MediaState.LOADING)
+            }
+        }
+        val controller = ControlController(client, onAuthInvalid = {})
+        val commands = listOf(
+            "play_pause" to null,
+            "prev" to null,
+            "next" to null,
+            "set_volume" to 37,
+            "set_output_device" to "output-id",
+            "set_input_device" to "input-id",
+        )
+
+        commands.forEach { (subAction, value) ->
             val result = sendMediaActionWithRefreshPolicy(
                 subAction = subAction,
-                value = null,
-                send = { action, value ->
-                    sent += (action to value)
-                    CommandResult(true, "ok", emptyMap())
-                },
+                value = value,
+                send = { action, argument -> controller.sendMediaAction(action, argument) },
                 refresh = { refreshes += 1 },
             )
             assertTrue(result.success)
             assertEquals("ok", result.message)
         }
 
-        assertEquals(playbackActions, sent.map { it.first })
-        assertTrue(sent.all { it.second == null })
+        assertEquals(
+            commands.map { "media" to it.first },
+            sent,
+        )
         assertEquals(0, refreshes)
-
+        failSubAction = "set_volume"
         val failed = sendMediaActionWithRefreshPolicy(
-            subAction = "next",
-            value = null,
-            send = { _, _ -> CommandResult(false, "播放器拒绝了媒体操作", emptyMap()) },
-            refresh = { refreshes += 1 },
-        )
-        assertTrue(!failed.success)
-        assertEquals("播放器拒绝了媒体操作", failed.message)
-        assertEquals(0, refreshes)
-
-        sendMediaActionWithRefreshPolicy(
             subAction = "set_volume",
-            value = 37,
-            send = { _, _ -> CommandResult(true, "ok", emptyMap()) },
+            value = 55,
+            send = { action, argument -> controller.sendMediaAction(action, argument) },
             refresh = { refreshes += 1 },
         )
-        assertEquals(1, refreshes)
+        assertFalse(failed.success)
+        assertEquals("媒体操作失败", failed.message)
+        assertEquals(0, refreshes)
     }
 
     @Test

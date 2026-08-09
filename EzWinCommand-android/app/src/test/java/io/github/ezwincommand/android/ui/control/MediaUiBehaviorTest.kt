@@ -3,38 +3,30 @@ package io.github.ezwincommand.android.ui.control
 import io.github.ezwincommand.android.model.AudioEndpoint
 import io.github.ezwincommand.android.model.MediaState
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaUiBehaviorTest {
-    @Test
-    fun `pending survives SSE merge and clears only after request finally`() {
-        val base = ControlUiState.Ready(emptyList(), emptyList(), media = MediaState.LOADING)
-        val pending = base.withDevicePending("set_output_device", true)
-        val afterSse = mergeReadyWithMedia(pending, MediaState.LOADING.copy(revision = 2, title = "新歌"), volumeBusy = false)
-        assertTrue(afterSse.outputDevicePending)
-        assertFalse(afterSse.inputDevicePending)
-        assertEquals("新歌", afterSse.media.title)
-        val afterArtwork = afterSse.copy(artwork = byteArrayOf(1, 2))
-        val afterError = afterArtwork.copy(media = afterArtwork.media.copy(error = "短错"))
-        assertTrue(afterArtwork.outputDevicePending)
-        assertTrue(afterError.outputDevicePending)
-        assertEquals("短错", afterError.media.error)
-        val afterFinally = afterSse.withDevicePending("set_output_device", false)
-        assertFalse(afterFinally.outputDevicePending)
-    }
 
     @Test
-    fun `device pending survives volume failure and idle reductions until device finally`() {
-        val base = ControlUiState.Ready(emptyList(), emptyList(), media = MediaState.LOADING.copy(volume = 30))
-        val pending = base.withDevicePending("set_output_device", true)
-        val afterFailure = pending.copy(media = pending.media.copy(volume = 30, error = "音量失败"))
-        val afterIdle = mergeReadyWithMedia(afterFailure, MediaState.LOADING.copy(revision = 3, volume = 40), volumeBusy = false)
-        assertTrue(afterFailure.outputDevicePending)
-        assertTrue(afterIdle.outputDevicePending)
-        assertFalse(afterIdle.withDevicePending("set_output_device", false).outputDevicePending)
+    fun `busy volume keeps local value while device snapshot converges`() {
+        val current = ControlUiState.Ready(
+            emptyList(),
+            emptyList(),
+            media = MediaState.LOADING.copy(
+                volume = 30,
+                renderDevices = listOf(AudioEndpoint("output-old", "旧输出"), AudioEndpoint("output-new", "新输出")),
+                selectedRenderId = "output-old",
+            ),
+        )
+        val authoritative = current.media.copy(revision = 3, volume = 42, selectedRenderId = "output-new")
+
+        val busy = mergeReadyWithMedia(current, authoritative, volumeBusy = true)
+        val settled = mergeReadyWithMedia(busy, authoritative, volumeBusy = false)
+
+        assertEquals(30, busy.media.volume)
+        assertEquals("output-new", busy.media.selectedRenderId)
+        assertEquals(42, settled.media.volume)
     }
 
     @Test

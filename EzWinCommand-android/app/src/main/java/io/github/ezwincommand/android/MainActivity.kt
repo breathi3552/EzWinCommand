@@ -48,8 +48,6 @@ import io.github.ezwincommand.android.ui.control.sendMediaActionWithRefreshPolic
 import io.github.ezwincommand.android.ui.control.ControlScreen
 import io.github.ezwincommand.android.ui.control.MediaConnectionController
 import io.github.ezwincommand.android.ui.control.MediaVolumeActor
-import io.github.ezwincommand.android.ui.control.withDevicePending
-import io.github.ezwincommand.android.ui.control.mergeAuthoritativeMedia
 import io.github.ezwincommand.android.ui.control.ControlPageGate
 import io.github.ezwincommand.android.ui.control.mergeReadyWithMedia
 import io.github.ezwincommand.android.ui.control.ControlUiState
@@ -631,7 +629,12 @@ class MainActivity : AppCompatActivity() {
                         volumeActor = MediaVolumeActor(
                             scope = this,
                             execute = {
-                                controller.sendMediaAction("set_volume", it).also { mediaConnection?.refresh() }
+                                sendMediaActionWithRefreshPolicy(
+                                    subAction = "set_volume",
+                                    value = it,
+                                    send = { action, argument -> controller.sendMediaAction(action, argument) },
+                                    refresh = { mediaConnection?.refresh() },
+                                )
                             },
                             onLocalValue = screen::updateLocalVolume,
                             onConfirmed = { },
@@ -710,32 +713,12 @@ class MainActivity : AppCompatActivity() {
                 }
                 val result = if (command.action == "media" && subAction != null) {
                     val value = command.params["endpoint_id"]
-                    val isDeviceCommand = subAction == "set_output_device" || subAction == "set_input_device"
-                    val before = activeReadyState
-                    if (isDeviceCommand && before != null) {
-                        val pending = before.withDevicePending(subAction, true)
-                        activeReadyState = pending
-                        coordinator.updateControlState(serverId, baseUrl, pending)
-                        screen.updateMediaStateExcludingVolume(pending)
-                    }
-                    try {
-                        sendMediaActionWithRefreshPolicy(
-                            subAction = subAction,
-                            value = value,
-                            send = { action, argument -> controller.sendMediaAction(action, argument) },
-                            refresh = { mediaConnection?.refresh() },
-                        )
-                    } finally {
-                        if (isDeviceCommand) {
-                            val current = activeReadyState ?: before
-                            if (current != null && activeController === controller && activeBaseUrl == baseUrl) {
-                                val cleared = current.withDevicePending(subAction, false)
-                                activeReadyState = cleared
-                                coordinator.updateControlState(serverId, baseUrl, cleared)
-                                screen.updateMediaStateExcludingVolume(cleared)
-                            }
-                        }
-                    }
+                    sendMediaActionWithRefreshPolicy(
+                        subAction = subAction,
+                        value = value,
+                        send = { action, argument -> controller.sendMediaAction(action, argument) },
+                        refresh = { mediaConnection?.refresh() },
+                    )
                 } else {
                     controller.sendAction(command)
                 }

@@ -192,8 +192,8 @@ def test_refresh_returns_existing_media_state_and_503_when_unavailable() -> None
         assert unavailable.json() == {"detail": "媒体服务不可用"}
 
 
-def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> None:
-    class PlaybackAdapter:
+def test_successful_media_commands_publish_authoritative_sse_snapshot() -> None:
+    class MediaAdapter:
         def __init__(self) -> None:
             self.media = _MediaReading(
                 True,
@@ -204,8 +204,8 @@ def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> N
             )
             self.audio = _AudioReading(
                 37,
-                (AudioEndpoint("out", "Output"),),
-                (AudioEndpoint("in", "Input"),),
+                (AudioEndpoint("out", "Output"), AudioEndpoint("out-2", "Output 2")),
+                (AudioEndpoint("in", "Input"), AudioEndpoint("in-2", "Input 2")),
                 "out",
                 "in",
             )
@@ -227,6 +227,12 @@ def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> N
                 title=f"{sub_action}-{len(self.commands)}",
                 playback="paused" if sub_action == "play_pause" else "playing",
             )
+            if sub_action == "set_volume":
+                self.audio = replace(self.audio, volume=volume)
+            elif sub_action == "set_output_device":
+                self.audio = replace(self.audio, selected_render_id=endpoint_id)
+            elif sub_action == "set_input_device":
+                self.audio = replace(self.audio, selected_capture_id=endpoint_id)
             return CommandResult(True, "媒体操作已执行")
 
         async def close(self) -> None:
@@ -245,7 +251,7 @@ def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> N
         data_line = next((line for line in lines if line.startswith("data: ")), None)
         return json.loads(data_line.removeprefix("data: ")) if data_line else {}
 
-    adapter = PlaybackAdapter()
+    adapter = MediaAdapter()
     service = MediaService(lambda: adapter)
     application = create_app(service)
     application.state.discovery_publisher.start = lambda: None
@@ -285,7 +291,15 @@ def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> N
         else:
             raise AssertionError("HTTP server 未就绪")
 
-        for sub_action in ("play_pause", "prev", "next"):
+        command_cases = (
+            ("play_pause", {}, {"playback": "paused"}),
+            ("prev", {}, {"playback": "playing"}),
+            ("next", {}, {"playback": "playing"}),
+            ("set_volume", {"volume": 55}, {"volume": 55}),
+            ("set_output_device", {"endpoint_id": "out-2"}, {"selected_render_id": "out-2"}),
+            ("set_input_device", {"endpoint_id": "in-2"}, {"selected_capture_id": "in-2"}),
+        )
+        for sub_action, extra, expected in command_cases:
             status, state_body = request("GET", "/api/media/state")
             assert status == 200
             before = json.loads(state_body)["revision"]
@@ -301,10 +315,8 @@ def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> N
             assert event_response.status == 200
             assert event_response.headers["Content-Type"].startswith("text/event-stream")
 
-            command_body = json.dumps(
-                {"action": "media", "params": {"sub_action": sub_action}},
-                ensure_ascii=False,
-            )
+            params = {"sub_action": sub_action, **extra}
+            command_body = json.dumps({"action": "media", "params": params}, ensure_ascii=False)
             status, response_body = request(
                 "POST",
                 "/api/command",
@@ -313,18 +325,24 @@ def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> N
             )
             assert status == 200
             assert json.loads(response_body)["success"] is True
-            assert adapter.commands[-1] == (sub_action, None, None)
+            assert adapter.commands[-1] == (sub_action, extra.get("volume"), extra.get("endpoint_id"))
 
             expected_title = f"{sub_action}-{len(adapter.commands)}"
             payload = None
             for _ in range(16):
-                candidate = read_sse_frame(event_response)
-                if candidate.get("title") == expected_title:
+                try:
+                    candidate = read_sse_frame(event_response)
+                except TimeoutError as exc:
+                    raise AssertionError(f"等待 {sub_action} 的 SSE 超时，before={before}") from exc
+                matches_expected = all(candidate.get(field) == value for field, value in expected.items())
+                is_media_event = sub_action in {"play_pause", "prev", "next"}
+                if matches_expected and (not is_media_event or candidate.get("title") == expected_title):
                     payload = candidate
                     break
             assert payload is not None
             assert payload["revision"] > before
-            assert payload["playback"] == ("paused" if sub_action == "play_pause" else "playing")
+            if is_media_event:
+                assert payload["title"] == expected_title
             events.close()
     finally:
         for connection in event_connections:

@@ -19,8 +19,6 @@ sealed interface ControlUiState {
         val media: MediaState = MediaState.LOADING,
         val mediaLoading: Boolean = true,
         val artwork: ByteArray? = null,
-        val outputDevicePending: Boolean = false,
-        val inputDevicePending: Boolean = false,
     ) : ControlUiState
     data class Error(
         val message: String,
@@ -28,11 +26,6 @@ sealed interface ControlUiState {
     ) : ControlUiState
 }
 
-internal fun ControlUiState.Ready.withDevicePending(subAction: String, pending: Boolean): ControlUiState.Ready = when (subAction) {
-    "set_output_device" -> copy(outputDevicePending = pending)
-    "set_input_device" -> copy(inputDevicePending = pending)
-    else -> this
-}
 
 fun interface ControlActionInvoker {
     suspend fun execute(command: ActionCommand): CommandResult

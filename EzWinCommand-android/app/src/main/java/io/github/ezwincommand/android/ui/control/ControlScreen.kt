@@ -125,8 +125,8 @@ class ControlScreen(context: Context) : FrameLayout(context) {
             button.isEnabled = spec.enabled
             button.alpha = if (spec.enabled) 1f else .38f
         }
-        outputSelector?.let { configureDeviceButton(it, state.renderDevices, state.selectedRenderId, ready.mediaLoading || ready.outputDevicePending, "set_output_device") }
-        inputSelector?.let { configureDeviceButton(it, state.captureDevices, state.selectedCaptureId, ready.mediaLoading || ready.inputDevicePending, "set_input_device") }
+        outputSelector?.let { configureDeviceButton(it, state.renderDevices, state.selectedRenderId, ready.mediaLoading, "set_output_device") }
+        inputSelector?.let { configureDeviceButton(it, state.captureDevices, state.selectedCaptureId, ready.mediaLoading, "set_input_device") }
         mediaError?.apply { text = state.error.orEmpty(); visibility = if (state.error.isNullOrBlank()) View.GONE else View.VISIBLE }
     }
 
@@ -241,8 +241,8 @@ class ControlScreen(context: Context) : FrameLayout(context) {
             mediaSeekBar = seek
             addView(seek, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dimen(R.dimen.media_seek_height)))
             addView(View(context).apply { setBackgroundColor(color(R.color.ezwin_border)) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dimen(R.dimen.media_divider_height)).apply { topMargin = dimen(R.dimen.media_section_gap); bottomMargin = dimen(R.dimen.media_section_gap) })
-            outputSelector = addDeviceSelector(R.drawable.ic_speaker_20, R.string.media_output_device, R.string.media_select_output, state?.renderDevices.orEmpty(), state?.selectedRenderId, loading || ready?.outputDevicePending == true, "set_output_device", onAction)
-            inputSelector = addDeviceSelector(R.drawable.ic_microphone_20, R.string.media_input_device, R.string.media_select_input, state?.captureDevices.orEmpty(), state?.selectedCaptureId, loading || ready?.inputDevicePending == true, "set_input_device", onAction)
+            outputSelector = addDeviceSelector(R.drawable.ic_speaker_20, R.string.media_output_device, R.string.media_select_output, state?.renderDevices.orEmpty(), state?.selectedRenderId, loading, "set_output_device", onAction)
+            inputSelector = addDeviceSelector(R.drawable.ic_microphone_20, R.string.media_input_device, R.string.media_select_input, state?.captureDevices.orEmpty(), state?.selectedCaptureId, loading, "set_input_device", onAction)
             mediaError = metaText(state?.error.orEmpty()).apply { setTextColor(color(R.color.ezwin_error)); visibility = if (state?.error.isNullOrBlank()) View.GONE else View.VISIBLE }
             addView(mediaError, verticalParams(dp(12)))
         }

@@ -1,9 +1,10 @@
 package io.github.ezwincommand.android.ui.control
 
+import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
+import android.widget.RadioButton
 import android.widget.TextView
-import android.view.View
 import io.github.ezwincommand.android.R
 import io.github.ezwincommand.android.model.DeviceInfo
 import androidx.appcompat.app.AppCompatActivity
@@ -18,6 +19,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.shadows.ShadowDialog
 import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
@@ -63,6 +65,52 @@ class MediaControlScreenViewTest {
             ancestor = ancestorView.parent
         }
     }
+    @Test
+    fun `device selector keeps selection until command result`() {
+        val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
+        val screen = ControlScreen(activity)
+        activity.setContentView(screen)
+        val commands = mutableListOf<ActionCommand>()
+        val media = MediaState.LOADING.copy(
+            renderDevices = listOf(AudioEndpoint("output-old", "旧输出"), AudioEndpoint("output-new", "新输出")),
+            captureDevices = listOf(AudioEndpoint("input", "输入设备")),
+            selectedRenderId = "output-old",
+            selectedCaptureId = "input",
+        )
+        val ready = ControlUiState.Ready(
+            listOf(ActionPlugin("media", "媒体", "", "", emptyList())),
+            emptyList(),
+            media = media,
+            mediaLoading = false,
+        )
+
+        screen.render(ready, commands::add, {}, { _, _ -> }, {})
+        val output = screen.mediaSelectorsForTest().first!!
+        assertEquals("旧输出", output.text)
+        assertTrue(output.isEnabled)
+
+        output.performClick()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val dialog = ShadowDialog.getLatestDialog() ?: error("设备选择对话框未显示")
+        assertTrue(dialog.isShowing)
+        val newOption = findViews(dialog.window!!.decorView) {
+            it is RadioButton && it.text.toString() == "新输出"
+        }.single()
+        newOption.performClick()
+
+        assertEquals(
+            listOf(ActionCommand("media", mapOf("sub_action" to "set_output_device", "endpoint_id" to "output-new"))),
+            commands,
+        )
+        assertEquals("旧输出", output.text)
+        assertTrue(output.isEnabled)
+
+        screen.updateMediaStateExcludingVolume(ready.copy(media = media.copy(error = "切换设备失败")))
+
+        assertEquals("旧输出", output.text)
+        assertTrue(output.isEnabled)
+    }
+
 
     @Test
     fun `device popup uses icon actions current badge and delete confirmation`() {

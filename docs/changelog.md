@@ -5,6 +5,7 @@
 ### 变更
 
 - Windows media integration 在空闲时仅等待真实 dirty event；初始化失败使用可取消且有上限的指数退避，媒体恢复和关闭不会阻断基础 HTTP，并清理 adapter 与待处理刷新。
+- Android 音量与输入、输出设备操作统一通过权威 Media Snapshot/SSE 收敛；音量保留即时节流和失败回滚，设备选择移除 pending 状态，并移除命令完成后的重复 refresh。
 
 ## 2026-08-08
 
