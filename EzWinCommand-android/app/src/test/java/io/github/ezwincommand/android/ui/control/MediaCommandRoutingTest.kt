@@ -4,6 +4,7 @@ import io.github.ezwincommand.android.model.CommandResult
 import io.github.ezwincommand.android.network.ApiResult
 import io.github.ezwincommand.android.network.EzApiClient
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -24,6 +25,48 @@ class MediaCommandRoutingTest {
         assertEquals("media", capturedAction)
         assertEquals(mapOf("sub_action" to "set_volume", "volume" to 37), capturedParams)
         assertEquals(2, capturedParams.size)
+    }
+    @Test
+    fun `playback commands keep feedback and skip post-command refresh`() = runBlocking {
+        val playbackActions = listOf("play_pause", "prev", "next")
+        val sent = mutableListOf<Pair<String, Any?>>()
+        var refreshes = 0
+
+        playbackActions.forEach { subAction ->
+            val result = sendMediaActionWithRefreshPolicy(
+                subAction = subAction,
+                value = null,
+                send = { action, value ->
+                    sent += (action to value)
+                    CommandResult(true, "ok", emptyMap())
+                },
+                refresh = { refreshes += 1 },
+            )
+            assertTrue(result.success)
+            assertEquals("ok", result.message)
+        }
+
+        assertEquals(playbackActions, sent.map { it.first })
+        assertTrue(sent.all { it.second == null })
+        assertEquals(0, refreshes)
+
+        val failed = sendMediaActionWithRefreshPolicy(
+            subAction = "next",
+            value = null,
+            send = { _, _ -> CommandResult(false, "播放器拒绝了媒体操作", emptyMap()) },
+            refresh = { refreshes += 1 },
+        )
+        assertTrue(!failed.success)
+        assertEquals("播放器拒绝了媒体操作", failed.message)
+        assertEquals(0, refreshes)
+
+        sendMediaActionWithRefreshPolicy(
+            subAction = "set_volume",
+            value = 37,
+            send = { _, _ -> CommandResult(true, "ok", emptyMap()) },
+            refresh = { refreshes += 1 },
+        )
+        assertEquals(1, refreshes)
     }
 
     @Test

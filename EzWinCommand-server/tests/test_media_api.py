@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from dataclasses import replace
 import http.client
@@ -11,7 +12,7 @@ import time
 import uvicorn
 from fastapi.testclient import TestClient
 from app import create_app
-from media.service import AudioEndpoint, MediaService, MediaState
+from media.service import AudioEndpoint, MediaService, MediaState, _AudioReading, _MediaReading
 from plugins.base import CommandResult
 
 
@@ -187,6 +188,149 @@ def test_refresh_returns_existing_media_state_and_503_when_unavailable() -> None
         unavailable = client.post("/api/media/refresh")
         assert unavailable.status_code == 503
         assert unavailable.json() == {"detail": "媒体服务不可用"}
+
+
+def test_successful_playback_command_publishes_authoritative_sse_snapshot() -> None:
+    class PlaybackAdapter:
+        def __init__(self) -> None:
+            self.media = _MediaReading(
+                True,
+                "before",
+                "Artist",
+                "playing",
+                source_app_user_model_id="player",
+            )
+            self.audio = _AudioReading(
+                37,
+                (AudioEndpoint("out", "Output"),),
+                (AudioEndpoint("in", "Input"),),
+                "out",
+                "in",
+            )
+            self.commands: list[tuple[str, int | None, str | None]] = []
+
+        async def initialize(self, notify) -> None:
+            self.notify = notify
+
+        async def read_media(self) -> _MediaReading:
+            return self.media
+
+        def read_audio(self) -> _AudioReading:
+            return self.audio
+
+        async def execute(self, sub_action, volume, endpoint_id) -> CommandResult:
+            self.commands.append((sub_action, volume, endpoint_id))
+            self.media = replace(
+                self.media,
+                title=f"{sub_action}-{len(self.commands)}",
+                playback="paused" if sub_action == "play_pause" else "playing",
+            )
+            return CommandResult(True, "媒体操作已执行")
+
+        async def close(self) -> None:
+            pass
+
+    def read_sse_frame(response: http.client.HTTPResponse) -> dict:
+        lines = []
+        while True:
+            raw = response.readline()
+            if not raw:
+                raise AssertionError("SSE 流在发布媒体快照前结束")
+            line = raw.decode("utf-8").rstrip("\r\n")
+            lines.append(line)
+            if line == "":
+                break
+        data_line = next((line for line in lines if line.startswith("data: ")), None)
+        return json.loads(data_line.removeprefix("data: ")) if data_line else {}
+
+    adapter = PlaybackAdapter()
+    service = MediaService(lambda: adapter)
+    application = create_app(service)
+    application.state.discovery_publisher.start = lambda: None
+    application.state.discovery_publisher.close = lambda: None
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(application, host="127.0.0.1", port=port, log_level="error")
+    )
+    server_thread = threading.Thread(
+        target=server.run,
+        kwargs={"sockets": [sock]},
+        daemon=True,
+    )
+    event_connections: list[http.client.HTTPConnection] = []
+    server_thread.start()
+
+    def request(method: str, path: str, body: str | None = None, headers=None) -> tuple[int, bytes]:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                status, _ = request("GET", "/ping")
+                if status == 200:
+                    break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("HTTP server 未就绪")
+
+        for sub_action in ("play_pause", "prev", "next"):
+            status, state_body = request("GET", "/api/media/state")
+            assert status == 200
+            before = json.loads(state_body)["revision"]
+
+            events = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            event_connections.append(events)
+            events.request(
+                "GET",
+                f"/api/media/events?since={before}",
+                headers={"Accept": "text/event-stream"},
+            )
+            event_response = events.getresponse()
+            assert event_response.status == 200
+            assert event_response.headers["Content-Type"].startswith("text/event-stream")
+
+            command_body = json.dumps(
+                {"action": "media", "params": {"sub_action": sub_action}},
+                ensure_ascii=False,
+            )
+            status, response_body = request(
+                "POST",
+                "/api/command",
+                body=command_body,
+                headers={"Content-Type": "application/json"},
+            )
+            assert status == 200
+            assert json.loads(response_body)["success"] is True
+            assert adapter.commands[-1] == (sub_action, None, None)
+
+            expected_title = f"{sub_action}-{len(adapter.commands)}"
+            payload = None
+            for _ in range(16):
+                candidate = read_sse_frame(event_response)
+                if candidate.get("title") == expected_title:
+                    payload = candidate
+                    break
+            assert payload is not None
+            assert payload["revision"] > before
+            assert payload["playback"] == ("paused" if sub_action == "play_pause" else "playing")
+            events.close()
+    finally:
+        for connection in event_connections:
+            connection.close()
+        server.should_exit = True
+        server_thread.join(timeout=5)
+        assert not server_thread.is_alive()
+        service.stop(timeout=1)
 
 
 def test_sse_subscribe_registers_before_snapshot() -> None:

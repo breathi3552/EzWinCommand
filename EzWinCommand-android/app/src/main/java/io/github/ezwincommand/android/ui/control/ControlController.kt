@@ -118,11 +118,30 @@ class ControlController(
         pendingStore?.allPending()?.forEach { trackPending(ActionCommand(it.action, it.params), scope, onResult) }
     }
     fun cancelTracking() { synchronized(trackingJobs) { trackingJobs.values.forEach { it.cancel() }; trackingJobs.clear() } }
+    companion object {
+        private val PLAYBACK_MEDIA_ACTIONS = setOf("play_pause", "prev", "next")
+
+        /** 播放命令等待 Server 的权威快照/SSE，其他媒体命令暂沿用当前刷新路径。 */
+        internal fun requiresImmediateMediaRefresh(subAction: String): Boolean =
+            subAction !in PLAYBACK_MEDIA_ACTIONS
+    }
+
     override fun close() {
         cancelTracking()
         apiClient.close()
     }
     suspend fun revokeDevice(deviceKey:String): Boolean = when(val r=apiClient.revokeDevice(deviceKey)) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
     suspend fun renameDevice(deviceKey:String,name:String): Boolean = if(name.trim().isEmpty()) false else when(val r=apiClient.renameDevice(deviceKey,name.trim())) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
+}
+
+internal suspend fun sendMediaActionWithRefreshPolicy(
+    subAction: String,
+    value: Any?,
+    send: suspend (String, Any?) -> CommandResult,
+    refresh: () -> Unit,
+): CommandResult {
+    val result = send(subAction, value)
+    if (ControlController.requiresImmediateMediaRefresh(subAction)) refresh()
+    return result
 }
 private fun <T> ApiResult<T>.isAuthInvalid() = this is ApiResult.HttpError && (status==401||status==403)

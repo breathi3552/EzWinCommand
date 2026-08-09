@@ -44,6 +44,7 @@ import io.github.ezwincommand.android.ui.control.AndroidUiCoordinator
 import io.github.ezwincommand.android.ui.control.AndroidUiEffect
 import io.github.ezwincommand.android.ui.control.AndroidUiState
 import io.github.ezwincommand.android.ui.control.ControlController
+import io.github.ezwincommand.android.ui.control.sendMediaActionWithRefreshPolicy
 import io.github.ezwincommand.android.ui.control.ControlScreen
 import io.github.ezwincommand.android.ui.control.MediaConnectionController
 import io.github.ezwincommand.android.ui.control.MediaVolumeActor
@@ -718,7 +719,12 @@ class MainActivity : AppCompatActivity() {
                         screen.updateMediaStateExcludingVolume(pending)
                     }
                     try {
-                        controller.sendMediaAction(subAction, value).also { mediaConnection?.refresh() }
+                        sendMediaActionWithRefreshPolicy(
+                            subAction = subAction,
+                            value = value,
+                            send = { action, argument -> controller.sendMediaAction(action, argument) },
+                            refresh = { mediaConnection?.refresh() },
+                        )
                     } finally {
                         if (isDeviceCommand) {
                             val current = activeReadyState ?: before

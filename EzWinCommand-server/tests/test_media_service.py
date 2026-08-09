@@ -167,6 +167,30 @@ def test_command_waits_for_post_command_refresh_without_polling() -> None:
     finally:
         service.stop()
 
+def test_failed_playback_command_is_not_retried_or_published() -> None:
+    class RejectingAdapter(FakeAdapter):
+        async def execute(self, sub_action, volume, endpoint_id) -> CommandResult:
+            self.thread_names.append(threading.current_thread().name)
+            self.commands.append((sub_action, volume, endpoint_id))
+            return CommandResult(False, "播放器拒绝了媒体操作")
+
+    adapter = RejectingAdapter()
+    service = MediaService(lambda: adapter)
+    service.start()
+    try:
+        for _ in range(30):
+            state = service.snapshot()
+            if state.available and state.cover is not None:
+                break
+            threading.Event().wait(0.05)
+        before = service.snapshot()
+        result = service.submit("play_pause").result(timeout=1)
+        assert result.success is False
+        assert adapter.commands == [("play_pause", None, None)]
+        assert service.snapshot() == before
+    finally:
+        service.stop()
+
 def test_service_single_thread_revision_and_artwork_are_independent() -> None:
     adapter = FakeAdapter()
     service = MediaService(lambda: adapter)
