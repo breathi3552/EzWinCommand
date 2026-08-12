@@ -11,6 +11,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from agent.protocol import PROTOCOL_HEADER, PROTOCOL_VERSION, protocol_mismatch_detail
+
 logger = logging.getLogger(__name__)
 _CODE_LENGTH = 4
 _PAIRING_TTL = 300
@@ -20,6 +22,8 @@ _TERMINAL_RETENTION = 60
 _PUBLIC_GET_PATHS = frozenset({"/ping", "/api/identity", "/api/local/pairings", "/api/local/events"})
 _PAIRING_COMPLETE_PATH = re.compile(r"/api/pairings/[^/]+/complete\Z")
 _PAIRING_CANCEL_PATH = re.compile(r"/api/pairings/[^/]+\Z")
+
+
 
 
 def _is_anonymous_request(method: str, path: str) -> bool:
@@ -131,36 +135,68 @@ class AuthManager:
 
     def is_authorized(self, key: str) -> bool:
         ok = self._store.is_authorized(key)
-        if ok: self._store.touch(key)
+        if ok:
+            self._store.touch(key)
         return ok
-    def touch(self, key: str) -> None: self._store.touch(key)
-    def list_devices(self) -> list[dict]: return self._store.list_devices()
-    def has_devices(self) -> bool: return self._store.has_any_device()
+
+    def touch(self, key: str) -> None:
+        self._store.touch(key)
+
+
+    def list_devices(self) -> list[dict]:
+        return self._store.list_devices()
+
+    def has_devices(self) -> bool:
+        return self._store.has_any_device()
+
     def remove_device(self, key: str) -> bool:
         changed = self._store.remove_device(key)
-        if changed: self._notify("devices")
+        if changed:
+            self._notify("devices")
         return changed
+
     def rename_device(self, key: str, name: str) -> bool:
         changed = self._store.rename_device(key, name)
-        if changed: self._notify("devices")
+        if changed:
+            self._notify("devices")
         return changed
+
+
+def _requires_remote_protocol(path: str) -> bool:
+    return path.startswith("/api/") and not path.startswith("/api/local/")
 
 def create_auth_middleware(auth_manager: AuthManager):
     class _AuthMiddleware:
-        def __init__(self, app: ASGIApp) -> None: self._app = app
+        def __init__(self, app: ASGIApp) -> None:
+            self._app = app
+
         async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-            if scope["type"] != "http": return await self._app(scope, receive, send)
+            if scope["type"] != "http":
+                return await self._app(scope, receive, send)
             path, method = scope.get("path", ""), scope.get("method", "")
-            if method == "OPTIONS" or _is_anonymous_request(method, path) or not path.startswith("/api/"):
+            if method == "OPTIONS" or not path.startswith("/api/"):
                 return await self._app(scope, receive, send)
             host = (scope.get("client") or ("", 0))[0]
-            if is_local_host(host):
+            local = is_local_host(host)
+            if not local and _requires_remote_protocol(path):
+                headers = {
+                    key.decode("latin-1").lower(): value.decode("latin-1")
+                    for key, value in scope.get("headers", [])
+                }
+                if headers.get(PROTOCOL_HEADER.lower()) != str(PROTOCOL_VERSION):
+                    response = JSONResponse(status_code=426, content={"detail": protocol_mismatch_detail()})
+                    return await response(scope, receive, send)
+            if _is_anonymous_request(method, path):
+                return await self._app(scope, receive, send)
+            if local:
                 scope.setdefault("state", {})["device_digest"] = hashlib.sha256(b"ezwincommand:loopback").hexdigest()
                 return await self._app(scope, receive, send)
-            request = Request(scope, receive); header = request.headers.get("Authorization", "")
+            request = Request(scope, receive)
+            header = request.headers.get("Authorization", "")
             if not header.startswith("Bearer ") or not auth_manager.is_authorized(header[7:]):
                 response = JSONResponse(status_code=401, content={"detail": "未授权"})
                 return await response(scope, receive, send)
             scope.setdefault("state", {})["device_digest"] = hashlib.sha256(header[7:].encode()).hexdigest()
             await self._app(scope, receive, send)
+
     return _AuthMiddleware

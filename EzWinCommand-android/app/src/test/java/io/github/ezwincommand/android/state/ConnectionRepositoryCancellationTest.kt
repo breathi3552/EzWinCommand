@@ -47,7 +47,7 @@ class ConnectionRepositoryCancellationTest {
         completed: ApiResult<PairingCompleted> = ApiResult.Success(PairingCompleted("new-key-a")),
         completeCalls: (() -> Unit)? = null,
     ) = object : EzApiClient("http://192.168.1.2:8080", { null }) {
-        override suspend fun identity() = ApiResult.Success(ServerIdentity(1, SERVER_A, "PC A"))
+        override suspend fun identity() = ApiResult.Success(ServerIdentity(2, SERVER_A, "PC A"))
         override suspend fun createPairing(serverId: String, deviceName: String) = ApiResult.Success(PairingCreated("pair", 300))
         override suspend fun completePairing(serverId: String, pairingId: String, code: String, deviceName: String): ApiResult<PairingCompleted> {
             completeCalls?.invoke()
@@ -117,7 +117,7 @@ class ConnectionRepositoryCancellationTest {
         val store = store("failed-complete-retry")
         var completeCalls = 0
         val api = object : EzApiClient(BASE_URL_A, { null }) {
-            override suspend fun identity() = ApiResult.Success(ServerIdentity(1, SERVER_A, "PC A"))
+            override suspend fun identity() = ApiResult.Success(ServerIdentity(2, SERVER_A, "PC A"))
             override suspend fun createPairing(serverId: String, deviceName: String) = ApiResult.Success(PairingCreated("pair", 300))
             override suspend fun completePairing(serverId: String, pairingId: String, code: String, deviceName: String): ApiResult<PairingCompleted> {
                 completeCalls += 1
@@ -150,6 +150,74 @@ class ConnectionRepositoryCancellationTest {
         assertTrue(result is PairingResult.Failed)
         assertEquals(0, completeCalls)
         assertFalse(store.list().isNotEmpty())
+    }
+
+    @Test
+    fun `incompatible identity stops before creating a pairing request`() = runTest {
+        val store = store("incompatible-pairing")
+        var createCalls = 0
+        val mismatch = io.github.ezwincommand.android.network.UnsupportedProtocolException(1)
+        val api = object : EzApiClient(BASE_URL_A, { null }) {
+            override suspend fun identity() = ApiResult.ParseError(mismatch.message.orEmpty(), mismatch)
+            override suspend fun createPairing(serverId: String, deviceName: String): ApiResult<PairingCreated> {
+                createCalls++
+                return ApiResult.Success(PairingCreated("unexpected", 300))
+            }
+        }
+        val repository = ConnectionRepository(store, clientFactory = { _, _ -> api })
+
+        val result = repository.testConnection(BASE_URL_A)
+
+        assertTrue(result is ConnectionCheckResult.Incompatible)
+        assertEquals(0, createCalls)
+        assertTrue(store.list().isEmpty())
+    }
+
+    @Test
+    fun `v2 restore keeps the existing device session without pairing`() = runTest {
+        val store = store("compatible-restore")
+        store.saveSession(SERVER_A, BASE_URL_A, "Phone", "credential-for-test-only", 100)
+        var pairingCalls = 0
+        val api = object : EzApiClient(BASE_URL_A, { null }) {
+            override suspend fun identity() = ApiResult.Success(ServerIdentity(2, SERVER_A, "PC A"))
+            override suspend fun listActions(): ApiResult<List<io.github.ezwincommand.android.model.ActionPlugin>> =
+                ApiResult.Success(emptyList())
+            override suspend fun createPairing(serverId: String, deviceName: String): ApiResult<PairingCreated> {
+                pairingCalls++
+                return ApiResult.Success(PairingCreated("unexpected", 300))
+            }
+        }
+        val repository = ConnectionRepository(store, clientFactory = { _, _ -> api }, now = { 200 })
+
+        val result = repository.restoreSession()
+
+        assertTrue(result is RestoreResult.Restored)
+        assertEquals(0, pairingCalls)
+        assertEquals("credential-for-test-only", store.readDeviceKey(SERVER_A))
+        assertEquals(1L, store.get(SERVER_A)!!.credentialVersion)
+        assertEquals(200L, store.get(SERVER_A)!!.lastSuccessfulAt)
+    }
+
+    @Test
+    fun `incompatible restore checks identity before protected requests`() = runTest {
+        val store = store("incompatible-restore")
+        store.saveSession(SERVER_A, BASE_URL_A, "Phone", "credential-for-test-only", 100)
+        var protectedCalls = 0
+        val api = object : EzApiClient(BASE_URL_A, { null }) {
+            override suspend fun identity() = ApiResult.HttpError(426, "协议版本不兼容")
+            override suspend fun listActions(): ApiResult<List<io.github.ezwincommand.android.model.ActionPlugin>> {
+                protectedCalls++
+                return ApiResult.Success(emptyList())
+            }
+        }
+        val repository = ConnectionRepository(store, clientFactory = { _, _ -> api })
+
+        val result = repository.restoreSession()
+
+        assertTrue(result is RestoreResult.InvalidSavedSession)
+        assertTrue((result as RestoreResult.InvalidSavedSession).message.contains("协议"))
+        assertEquals(0, protectedCalls)
+        assertEquals("credential-for-test-only", store.readDeviceKey(SERVER_A))
     }
 
     private companion object {

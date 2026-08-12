@@ -154,6 +154,7 @@ class MainActivity : AppCompatActivity() {
                 when (event) {
                     is DiscoveryEvent.Updated -> { discoveredServers = event.servers; renderServerLists() }
                     is DiscoveryEvent.Finished -> { discoveredServers = event.servers; renderServerLists(); binding.scanStatusText.setText(R.string.main_scan_finished); binding.refreshButton.isEnabled = true }
+                    is DiscoveryEvent.Incompatible -> showTopMessage(errorMessage(event.message))
                     is DiscoveryEvent.Unavailable -> { discoveredServers = emptyList(); renderServerLists(); binding.scanStatusText.text = event.message; binding.refreshButton.isEnabled = true }
                 }
             }
@@ -239,6 +240,7 @@ class MainActivity : AppCompatActivity() {
                         showPairingDialog(result.baseUrl)
                     }
                 }
+                is ConnectionCheckResult.Incompatible -> showTopMessage(errorMessage(result.message))
                 is ConnectionCheckResult.Unreachable -> showTopMessage(errorMessage(result.message))
             }
             setInputsEnabled(true)

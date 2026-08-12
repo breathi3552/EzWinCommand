@@ -22,6 +22,7 @@ data class DiscoveredServer(val serverId: String, val name: String, val baseUrl:
 sealed interface DiscoveryEvent {
     data class Updated(val servers: List<DiscoveredServer>) : DiscoveryEvent
     data class Finished(val servers: List<DiscoveredServer>) : DiscoveryEvent
+    data class Incompatible(val message: String) : DiscoveryEvent
     data class Unavailable(val message: String) : DiscoveryEvent
 }
 
@@ -169,19 +170,20 @@ class NsdDiscoveryClient(
         val baseUrl = "http://${if (host.contains(':')) "[$host]" else host}:${info.port}"
         scope.launch {
             identitySlots.withPermit {
-                when (val result = clientFactory(baseUrl).identity()) {
-                    is ApiResult.Success -> synchronized(this@NsdDiscoveryClient) {
-                        if (generation.get() != current) return@synchronized
-                        identitySuccesses++
-                        val identity = result.value
-                        found[identity.serverId] = DiscoveredServer(identity.serverId, identity.name, baseUrl)
-                        Log.i(TAG, "event=identity_result generation=$current category=success servers=${found.size}")
-                        callback?.invoke(DiscoveryEvent.Updated(found.values.toList()))
-                    }
-                    is ApiResult.HttpError -> recordIdentityFailure(current, "http", result.status)
-                    is ApiResult.NetworkError -> recordIdentityFailure(current, "network")
-                    is ApiResult.ParseError -> recordIdentityFailure(current, "parse")
-                }
+                dispatchIdentityResult(
+                    clientFactory(baseUrl).identity(),
+                    onSuccess = { identity ->
+                        synchronized(this@NsdDiscoveryClient) {
+                            if (generation.get() != current) return@synchronized
+                            identitySuccesses++
+                            found[identity.serverId] = DiscoveredServer(identity.serverId, identity.name, baseUrl)
+                            Log.i(TAG, "event=identity_result generation=$current category=success servers=${found.size}")
+                            callback?.invoke(DiscoveryEvent.Updated(found.values.toList()))
+                        }
+                    },
+                    onIncompatible = { event -> recordIdentityIncompatible(current, event) },
+                    onFailure = { category, status -> recordIdentityFailure(current, category, status) },
+                )
             }
         }
     }
@@ -191,6 +193,13 @@ class NsdDiscoveryClient(
         if (generation.get() != current) return
         identityFailures++
         Log.w(TAG, "event=identity_result generation=$current category=$category${status?.let { " status=$it" }.orEmpty()}")
+    }
+
+    @Synchronized
+    private fun recordIdentityIncompatible(current: Long, event: DiscoveryEvent.Incompatible) {
+        if (generation.get() != current) return
+        identityFailures++
+        callback?.invoke(event)
     }
 
     private fun unavailable(current: Long) {
@@ -259,6 +268,28 @@ class NsdDiscoveryClient(
         internal fun isCompatibleServiceType(value: String?): Boolean {
             val normalized = value?.trim()?.lowercase()?.trimEnd('.') ?: return false
             return normalized == "_ezwincommand._tcp" || normalized == "_ezwincommand._tcp.local"
+        }
+
+        internal fun dispatchIdentityResult(
+            result: ApiResult<io.github.ezwincommand.android.model.ServerIdentity>,
+            onSuccess: (io.github.ezwincommand.android.model.ServerIdentity) -> Unit,
+            onIncompatible: (DiscoveryEvent.Incompatible) -> Unit,
+            onFailure: (String, Int?) -> Unit,
+        ) {
+            when (result) {
+                is ApiResult.Success -> onSuccess(result.value)
+                is ApiResult.HttpError -> if (result.status == 426) {
+                    onIncompatible(DiscoveryEvent.Incompatible("服务器协议不兼容，请升级应用。"))
+                } else {
+                    onFailure("http", result.status)
+                }
+                is ApiResult.ParseError -> if (result.cause is UnsupportedProtocolException) {
+                    onIncompatible(DiscoveryEvent.Incompatible("服务器协议不兼容，请升级应用。"))
+                } else {
+                    onFailure("parse", null)
+                }
+                is ApiResult.NetworkError -> onFailure("network", null)
+            }
         }
     }
 }

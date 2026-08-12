@@ -8,6 +8,7 @@ from typing import Any
 
 import ifaddr
 
+from .protocol import PROTOCOL_VERSION
 from .server_identity import ServerIdentity
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ class DiscoveryPublisher:
                     addresses=addresses,
                     port=self.port,
                     properties={
-                        b"ver": str(self.identity.version).encode("ascii"),
+                        b"ver": str(PROTOCOL_VERSION).encode("ascii"),
                         b"id": self.identity.server_id.encode("ascii"),
                         b"name": self.identity.name.encode("utf-8"),
                     },

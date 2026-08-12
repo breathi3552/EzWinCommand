@@ -38,6 +38,10 @@ sealed interface MediaEventTermination {
     data object ClosedByCaller : MediaEventTermination
 }
 
+class UnsupportedProtocolException(
+    val advertisedVersion: Int?,
+) : IllegalArgumentException("协议版本不兼容，请升级应用。")
+
 private class MediaEventConnection(
     private val callerClosed: AtomicBoolean,
     private val connection: AtomicReference<HttpURLConnection?>,
@@ -72,14 +76,20 @@ open class EzApiClient(
         method = "GET",
         path = "/ping",
         authenticated = false,
+        protocol = false,
         parser = { body -> PingResponse(status = body.optString("status", "")) },
     )
 
     open suspend fun identity(): ApiResult<ServerIdentity> = request(
         method = "GET", path = "/api/identity", authenticated = false,
         parser = { body ->
-            val version = body.requiredInt("protocol_version")
-            require(version == 1) { "不支持的 identity 版本" }
+            val rawVersion = body.opt("protocol_version")
+            val version = (rawVersion as? Number)?.let { value ->
+                value.toDouble().takeIf { it == value.toInt().toDouble() }?.toInt()
+            }
+            if (version != AppConstants.PROTOCOL_VERSION) {
+                throw UnsupportedProtocolException(version)
+            }
             val id = body.requiredString("server_id")
             val uuid = UUID.fromString(id)
             require(uuid.version() == 4 && uuid.toString() == id.lowercase()) { "server_id 非法" }
@@ -302,6 +312,7 @@ open class EzApiClient(
         method: String,
         path: String,
         authenticated: Boolean,
+        protocol: Boolean = true,
         readTimeoutMillis: Int = timeoutMillis,
         body: JSONObject? = null,
         successCodes: Set<Int> = setOf(200),
@@ -313,6 +324,7 @@ open class EzApiClient(
                 readTimeout = readTimeoutMillis
                 connectTimeout = timeoutMillis
                 doInput = true
+                if (protocol) setProtocolMarker()
                 if (body != null) {
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -348,6 +360,8 @@ open class EzApiClient(
 
             val parsed = try {
                 parser(responseJson ?: JSONObject())
+            } catch (t: UnsupportedProtocolException) {
+                return@withContext ApiResult.ParseError(t.message.orEmpty(), t)
             } catch (t: Throwable) {
                 return@withContext ApiResult.ParseError("解析响应失败", t)
             }
@@ -364,7 +378,12 @@ open class EzApiClient(
         return url.openConnection() as HttpURLConnection
     }
 
+    private fun HttpURLConnection.setProtocolMarker() {
+        setRequestProperty(AppConstants.PROTOCOL_HEADER, AppConstants.PROTOCOL_VERSION.toString())
+    }
+
     private fun HttpURLConnection.setBearer() {
+        setProtocolMarker()
         deviceKeyProvider()?.trim()?.takeIf { it.isNotEmpty() }?.let {
             setRequestProperty("Authorization", "Bearer $it")
         }

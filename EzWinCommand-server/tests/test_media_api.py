@@ -199,6 +199,9 @@ def _remote_request(client: TestClient, method: str, url: str, **kwargs):
     transport = client._transport
     previous = getattr(transport, "client", None)
     transport.client = ("192.168.1.10", 54321)
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers.setdefault("X-EzWinCommand-Protocol", "2")
+    kwargs["headers"] = headers
     try:
         return client.request(method, url, **kwargs)
     finally:

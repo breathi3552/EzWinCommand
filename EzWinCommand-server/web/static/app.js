@@ -3,6 +3,7 @@
 // ============================================================
 
 const DEVICE_KEY_STORAGE = "ez_device_key";
+const WIRE_PROTOCOL_VERSION = 2;
 const DEVICE_POLL_MS = 30000;    // 外部设备列表轮询间隔
 
 // ============================================================
@@ -23,7 +24,7 @@ function storedKey() {
 /** 构造带鉴权的 fetch headers */
 function authHeaders(extra = {}) {
     const key = storedKey();
-    const headers = { ...extra };
+    const headers = { ...extra, "X-EzWinCommand-Protocol": String(WIRE_PROTOCOL_VERSION) };
     if (key) {
         headers["Authorization"] = "Bearer " + key;
     }

@@ -401,11 +401,30 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         setOnClickListener { click() }
     }
     private fun confirmDeleteDevice(device: DeviceInfo) {
-        deleteDialog = AlertDialog.Builder(context).setTitle(R.string.control_delete_device_title).setMessage(context.getString(R.string.control_delete_device_confirm, device.name.ifBlank { device.key })).setNegativeButton(android.R.string.cancel, null).setPositiveButton(R.string.control_delete_device) { _, _ -> revokeDevice?.invoke(device.key) }.show()
+        deleteDialog = AlertDialog.Builder(context)
+            .setTitle(R.string.control_delete_device_title)
+            .setMessage(context.getString(R.string.control_delete_device_confirm, device.name.ifBlank { device.key }))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.control_delete_device) { _, _ -> revokeDevice?.invoke(device.key) }
+            .show()
     }
+
     private fun showRenameDialog(device: DeviceInfo, rename: (String, String) -> Unit) {
-        val dialog = Dialog(context); val content = panel(); val input = EditText(context).apply { setText(device.name); setTextColor(color(R.color.ezwin_text)); setBackgroundResource(R.drawable.ez_input) }
-        content.addView(input); content.addView(primaryButton(context.getString(R.string.control_rename_device)) { dialog.dismiss(); rename(device.key, input.text.toString()) }); dialog.setContentView(content); dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)); dialog.show()
+        val dialog = Dialog(context)
+        val content = panel()
+        val input = EditText(context).apply {
+            setText(device.name)
+            setTextColor(color(R.color.ezwin_text))
+            setBackgroundResource(R.drawable.ez_input)
+        }
+        content.addView(input)
+        content.addView(primaryButton(context.getString(R.string.control_rename_device)) {
+            dialog.dismiss()
+            rename(device.key, input.text.toString())
+        })
+        dialog.setContentView(content)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
     }
     fun showResult(result: CommandResult) = result.message
     private fun panel() = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundResource(R.drawable.ez_panel); setPadding(dp(16)) }

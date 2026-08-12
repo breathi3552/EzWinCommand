@@ -4,13 +4,13 @@
 
 | 验收路径 | 必须保持的结果 | 最低验证层级 | 当前证据与缺口 |
 |---|---|---|---|
-| Server 发现与身份确认 | 发现结果必须经 Server 身份确认；地址变化不应被误判为新 Server；过期发现回调不能覆盖当前扫描 | Server/Android contract + 真实网络 | 自动化覆盖协议与状态；真机、路由器和防火墙组合仍需环境验证 |
+| Server 发现、身份与协议兼容 | 发现结果必须经 Server 身份确认；地址变化不应被误判为新 Server；过期发现回调不能覆盖当前扫描；Server 与 Android 协议不兼容时安全拒绝，新客户端能够识别差异时明确提示升级 | Server/Android contract + 真实网络 | Automated：覆盖独立 wire protocol/identity schema 版本、既有 Server Identity 保持 server_id、远端协议标记拒绝、mDNS v2 广播和 Android identity/配对/恢复的兼容性分支；Manual — 待人工验证：真机、路由器和防火墙组合及旧客户端实际提示 |
 | 配对请求生命周期 | 远端不能读取真实配对码；失败、锁定、取消和过期不产生设备权限；成功只建立一个设备关系 | Server/Android contract | 自动化覆盖主要状态；PC 多请求呈现和 Android 生命周期需保留 UI/E2E 门禁 |
 | Android 配对恢复 | 重复提交、页面重建或暂时失败不得产生幽灵设备；失败后用户可修正输入，成功且安全保存后才进入控制状态 | Android state/UI + Server contract | JVM/Robolectric 有覆盖；视觉、输入法和 TalkBack 仍需设备或模拟器验证 |
-| 设备会话与撤销 | 有效会话可在重启后恢复；撤销成功使请求和活动流失效；撤销失败不误删仍有效的本地会话 | Cross-platform contract + UI/E2E | 自动化覆盖存储、鉴权和撤销；真实 Keystore 与跨设备撤销需环境验证 |
-| 本地管理安全边界 | 配对码和设备管理只对 PC 本机开放；管理事件不携带敏感值；断线后以权威快照恢复 | Server interface + Web browser | 接口与静态契约有覆盖；真实浏览器断线及多配对卡交互仍需 UI 验证 |
-| 插件加载与启用边界 | 只有已启用且成功加载的本地受信任插件动作可执行；单个插件失败不破坏其他能力 | Server interface | 自动化应覆盖禁用、加载失败和动作可见性；远程插件分发不属于验收范围 |
-| 异步命令生命周期 | 任务所有者隔离、重复提交收敛、重启和过期产生明确状态，公开结果不泄露内部诊断 | Server/Web/Android contract | 自动化覆盖 Server 与客户端状态；真实浏览器 soft timeout 和 Android 断网恢复仍需 E2E |
+| 设备会话与撤销 | 已有配对关系无感补充非敏感设备标识；有效会话可在重启和协议升级后恢复；撤销成功使请求和活动流失效；撤销失败不误删仍有效的本地会话 | Cross-platform contract + UI/E2E | Automated：覆盖 device_id 幂等迁移、迁移写入失败保留最后有效文件、旧 Device Key 鉴权保留和 Android v2 会话恢复兼容门；公共管理接口切换、自撤销、外部撤销终止态及真实 Keystore/跨设备撤销仍需后续任务或环境验证 |
+| 本地管理安全边界 | 配对码和设备管理只对 PC 本机开放；管理事件不携带敏感值；断线后以权威快照恢复 | Server interface + Web browser | 接口与静态契约有覆盖；device_id 公共管理切换、真实浏览器断线及多配对卡交互仍需后续任务或 UI 验证 |
+| 插件加载、启用与通用渲染边界 | 只有已启用且成功加载的本地受信任插件动作可执行；单个插件失败不破坏其他能力；通用 metadata 只驱动无参数动作和固定子动作按钮，rich card 由客户端内置 | Server/Android interface | 自动化覆盖插件可见性、通用动作/子动作与 media/OLED rich card；远程插件分发、动态表单、实时状态和 Server 自定义布局不属于验收范围 |
+| 异步命令生命周期 | 任务所有者隔离、重复提交收敛、重启和过期产生明确状态，公开结果不泄露内部诊断 | Server/Web/Android contract | 自动化覆盖 Server 与客户端任务状态；真实浏览器 soft timeout 和 Android 断网恢复仍需 E2E |
 | 媒体启动与恢复 | Windows 媒体初始化、超时、迟到成功和重建不能阻断基础 HTTP；资源只按所属生命周期关闭 | Server unit/interface + Windows environment | Automated：覆盖事件驱动 idle、初始化超时与可取消指数退避、adapter 清理，以及媒体失败时 HTTP、设备和动作 API 仍可用；AI-assisted（2026-08-09；证据记录见 [issue #6 关闭评论](https://github.com/breathi3552/EzWinCommand/issues/6#issuecomment-5229878778)）：真实媒体服务初始化、`/ping` 可用、GSMTC 当前状态和封面 HTTP 读取通过；Manual — 待人工验证：真实初始化故障长期退避、播放器异常恢复和长时间资源观察 |
 | 媒体快照与事件同步 | Snapshot 与 SSE 之间不丢变化；修订号单调；慢客户端和断线恢复得到最新状态；旧封面不能回写 | Cross-platform contract + UI/E2E | Automated：Server/Android 覆盖主要状态、六类媒体命令的权威 SSE 收敛、断线保留快照、恢复快照先于事件、退避重连、revision/封面迟到结果抑制和关闭清理；AI-assisted（2026-08-09；证据记录见 [issue #6 关闭评论](https://github.com/breathi3552/EzWinCommand/issues/6#issuecomment-5229878778)）：播放/暂停、上一首/下一首、封面读取及 SSE revision 冒烟通过；Manual — 待人工验证：Android 控制页真机/模拟器链路、Web 浏览器实际点击与授权失效交互、跨设备长时间断线和真实播放器长时行为 |
 | 音频设备控制 | 没有活动媒体时音量和输入、输出设备仍可控制；平台回调只更新相关状态且设备切换后继续有效 | Server unit/interface + Windows environment | Automated：Server/Android 覆盖音量失败回滚、设备选择保留和对应 SSE 收敛；AI-assisted（2026-08-09；证据记录见 [issue #6 关闭评论](https://github.com/breathi3552/EzWinCommand/issues/6#issuecomment-5229878778)）：真实 Core Audio 音量变更后恢复原值、输入/输出备选端点切换后恢复原选择，均收到目标 Snapshot/SSE；Manual — 待人工验证：多设备角色差异、callback 重绑定和 Android 真机视觉 |

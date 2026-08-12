@@ -58,7 +58,7 @@ def test_pairing_list_orders_active_before_newest_terminal(monkeypatch):
 
 
 def test_mdns_publisher_registers_android_compatible_service(monkeypatch):
-    identity = ServerIdentity(version=1, server_id="00000000-0000-4000-8000-000000000001", name="PC")
+    identity = ServerIdentity(schema_version=1, server_id="00000000-0000-4000-8000-000000000001", name="PC")
     captured = {}
 
     class FakeInfo:
@@ -81,12 +81,13 @@ def test_mdns_publisher_registers_android_compatible_service(monkeypatch):
     assert captured["name"].endswith("." + SERVICE_TYPE)
     assert captured["port"] == 49123
     assert set(captured["properties"]) == {b"ver", b"id", b"name"}
+    assert captured["properties"][b"ver"] == b"2"
     assert captured["addresses"] == [b"\xc0\xa8\x1f\x57"]
     assert captured["server"] == "ezwincommand-00000000.local."
 
 
 def test_mdns_publisher_rejects_missing_lan_address(monkeypatch):
-    identity = ServerIdentity(version=1, server_id="00000000-0000-4000-8000-000000000001", name="PC")
+    identity = ServerIdentity(schema_version=1, server_id="00000000-0000-4000-8000-000000000001", name="PC")
     monkeypatch.setattr("agent.discovery._publishable_ipv4_addresses", lambda: [])
     publisher = DiscoveryPublisher(identity, 49123)
 
@@ -95,7 +96,7 @@ def test_mdns_publisher_rejects_missing_lan_address(monkeypatch):
 
 
 def test_mdns_close_returns_within_two_seconds_when_unregister_hangs(monkeypatch):
-    identity = ServerIdentity(version=1, server_id="00000000-0000-4000-8000-000000000001", name="PC")
+    identity = ServerIdentity(schema_version=1, server_id="00000000-0000-4000-8000-000000000001", name="PC")
     publisher = DiscoveryPublisher(identity, 8080)
     entered = threading.Event()
     release = threading.Event()

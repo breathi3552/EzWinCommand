@@ -9,6 +9,8 @@ class AppConstantsTest {
     fun exposesExpectedDefaults() {
         assertEquals(8080, AppConstants.DEFAULT_PORT)
         assertEquals("http", AppConstants.DEFAULT_SCHEME)
+        assertEquals(2, AppConstants.PROTOCOL_VERSION)
+        assertEquals("X-EzWinCommand-Protocol", AppConstants.PROTOCOL_HEADER)
     }
 }
 

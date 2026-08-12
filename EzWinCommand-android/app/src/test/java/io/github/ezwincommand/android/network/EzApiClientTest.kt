@@ -1,4 +1,5 @@
 package io.github.ezwincommand.android.network
+import io.github.ezwincommand.android.AppConstants
 
 import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayInputStream
@@ -8,12 +9,27 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.Job
-import org.junit.Assert.assertFalse
 
 class EzApiClientTest {
+    private class JsonConnection(private val body: String) : HttpURLConnection(URL("http://192.168.1.10:8080/test")) {
+        private val requestProperties = mutableMapOf<String, String>()
+
+        override fun setRequestProperty(key: String, value: String) {
+            requestProperties[key] = value
+        }
+
+        override fun getRequestProperty(key: String): String? = requestProperties[key]
+        override fun getResponseCode(): Int = 200
+        override fun getInputStream(): InputStream = ByteArrayInputStream(body.toByteArray())
+        override fun getOutputStream() = ByteArrayOutputStream()
+        override fun disconnect() = Unit
+        override fun usingProxy() = false
+        override fun connect() = Unit
+    }
     @Test
     fun `normalizes baseUrl and preserves port`() {
         val client = EzApiClient(" 192.168.1.10:8080/ ", deviceKeyProvider = { null })
@@ -59,6 +75,52 @@ class EzApiClientTest {
         val result = ApiResult.HttpError(403, "配对码无效或已锁定")
         assertEquals(403, result.status)
         assertEquals("配对码无效或已锁定", result.message)
+    }
+
+    @Test
+    fun `identity reports v2 and carries the protocol marker`() = runBlocking {
+        val connection = JsonConnection(
+            """{"protocol_version":2,"server_id":"00000000-0000-4000-8000-000000000001","display_name":"PC"}""",
+        )
+        val client = object : EzApiClient("http://192.168.1.10:8080", { null }) {
+            override fun openConnection(path: String): HttpURLConnection = connection
+        }
+
+        val result = client.identity()
+
+        assertTrue(result is ApiResult.Success)
+        assertEquals("2", connection.getRequestProperty(AppConstants.PROTOCOL_HEADER))
+        client.close()
+    }
+
+    @Test
+    fun `identity rejects an incompatible protocol before protected work`() = runBlocking {
+        val connection = JsonConnection(
+            """{"protocol_version":1,"server_id":"00000000-0000-4000-8000-000000000001","display_name":"PC"}""",
+        )
+        val client = object : EzApiClient("http://192.168.1.10:8080", { null }) {
+            override fun openConnection(path: String): HttpURLConnection = connection
+        }
+
+        val result = client.identity()
+
+        assertTrue(result is ApiResult.ParseError)
+        assertTrue((result as ApiResult.ParseError).cause is UnsupportedProtocolException)
+        client.close()
+    }
+
+    @Test
+    fun `protected requests carry the v2 marker`() = runBlocking {
+        val connection = JsonConnection("""{"actions":[]}""")
+        val client = object : EzApiClient("http://192.168.1.10:8080", { "credential-for-test-only" }) {
+            override fun openConnection(path: String): HttpURLConnection = connection
+        }
+
+        val result = client.listActions()
+
+        assertTrue(result is ApiResult.Success)
+        assertEquals("2", connection.getRequestProperty(AppConstants.PROTOCOL_HEADER))
+        client.close()
     }
     @Test
     fun `complete pairing extracts FastAPI detail as short message`() = runBlocking {

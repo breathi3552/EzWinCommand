@@ -41,9 +41,13 @@ class ControlControllerTest {
 
     @Test
     fun `load marks current device key`() = runBlocking {
-        val controller = ControlController(fakeClient(devices = listOf(DeviceInfo("k", "手机", null, null))), currentDeviceKeyProvider = { "k" }, onAuthInvalid = {})
+        val controller = ControlController(
+            fakeClient(devices = listOf(DeviceInfo("device-key", "手机", null, null))),
+            currentDeviceKeyProvider = { "device-key" },
+            onAuthInvalid = {},
+        )
         val state = controller.load() as ControlUiState.Ready
-        assertEquals("k", state.currentDeviceKey)
+        assertEquals("device-key", state.currentDeviceKey)
     }
 
     @Test

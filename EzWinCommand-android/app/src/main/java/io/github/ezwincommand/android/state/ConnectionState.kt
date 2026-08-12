@@ -26,6 +26,7 @@ sealed interface ConnectionCheckResult {
         val expiresIn: Int?,
         val savedSession: ServerSession?,
     ) : ConnectionCheckResult
+    data class Incompatible(val message: String) : ConnectionCheckResult
     data class Unreachable(val message: String) : ConnectionCheckResult
 }
 

@@ -59,7 +59,7 @@ data class PingResponse(
 )
 
 data class ServerIdentity(
-    val version: Int,
+    val protocolVersion: Int,
     val serverId: String,
     val name: String,
 )

@@ -9,6 +9,8 @@ import json
 import hashlib
 from typing import Any, AsyncIterator
 
+from agent.protocol import PROTOCOL_VERSION
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -383,12 +385,15 @@ async def set_plugin_enabled(plugin_name: str, body: _EnablePluginBody, request:
 
 def _get_auth_manager(request: Request):
     return request.app.state.auth_manager
-
 @router.get("/api/identity")
 async def identity(request: Request):
     value = request.app.state.server_identity
-    return {"protocol_version": value.version, "server_id": value.server_id,
-            "display_name": value.name, "port": request.app.state.discovery_publisher.port}
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "server_id": value.server_id,
+        "display_name": value.name,
+        "port": request.app.state.discovery_publisher.port,
+    }
 
 @router.post("/api/pairings", status_code=201)
 async def create_pairing(body: PairingCreateRequest, request: Request):
@@ -439,17 +444,16 @@ async def revoke_device(device_key: str, request: Request):
     if success:
         request.app.state.media_event_hub.revoke(hashlib.sha256(device_key.encode()).hexdigest())
     return {"success": success}
+
+
 class _RenameBody(BaseModel):
     """设备重命名请求体。"""
+
     name: str
 
 
 @router.patch("/api/devices/{device_key}")
 async def rename_device(device_key: str, body: _RenameBody, request: Request):
-    """重命名已配对设备。
-
-    需要鉴权。
-    """
-    auth_manager = _get_auth_manager(request)
-    success = auth_manager.rename_device(device_key, body.name)
+    """重命名已配对设备。"""
+    success = _get_auth_manager(request).rename_device(device_key, body.name)
     return {"success": success}

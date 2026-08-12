@@ -9,7 +9,8 @@ import socket
 import tempfile
 import uuid
 
-_SCHEMA_VERSION = 1
+IDENTITY_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = IDENTITY_SCHEMA_VERSION
 
 
 def _display_name(value: str) -> str:
@@ -23,7 +24,7 @@ def _display_name(value: str) -> str:
 class ServerIdentity:
     server_id: str
     name: str
-    version: int = _SCHEMA_VERSION
+    schema_version: int = IDENTITY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         parsed = uuid.UUID(self.server_id)
@@ -31,7 +32,7 @@ class ServerIdentity:
             raise ValueError("server_id 必须是规范 UUID v4")
         object.__setattr__(self, "server_id", str(parsed))
         object.__setattr__(self, "name", _display_name(self.name))
-        if self.version != _SCHEMA_VERSION:
+        if self.schema_version != IDENTITY_SCHEMA_VERSION:
             raise ValueError("不支持的 identity schema")
 
     @property
@@ -39,7 +40,7 @@ class ServerIdentity:
         return self.server_id.split("-", 1)[0]
 
     def to_dict(self) -> dict[str, object]:
-        return {"version": self.version, "server_id": self.server_id, "name": self.name}
+        return {"version": self.schema_version, "server_id": self.server_id, "name": self.name}
 
     @classmethod
     def load(cls, path: str | Path, name: str | None = None) -> "ServerIdentity":

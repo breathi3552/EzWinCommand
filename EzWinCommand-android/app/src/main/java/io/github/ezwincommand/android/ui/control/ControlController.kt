@@ -127,8 +127,28 @@ class ControlController(
         cancelTracking()
         apiClient.close()
     }
-    suspend fun revokeDevice(deviceKey:String): Boolean = when(val r=apiClient.revokeDevice(deviceKey)) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
-    suspend fun renameDevice(deviceKey:String,name:String): Boolean = if(name.trim().isEmpty()) false else when(val r=apiClient.renameDevice(deviceKey,name.trim())) { is ApiResult.Success -> r.value; is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); false }; else -> false }
+    suspend fun revokeDevice(deviceKey: String): Boolean = when (val result = apiClient.revokeDevice(deviceKey)) {
+        is ApiResult.Success -> result.value
+        is ApiResult.HttpError -> {
+            if (result.status == 401 || result.status == 403) onAuthInvalid()
+            false
+        }
+        else -> false
+    }
+
+    suspend fun renameDevice(deviceKey: String, name: String): Boolean =
+        if (name.trim().isEmpty()) {
+            false
+        } else {
+            when (val result = apiClient.renameDevice(deviceKey, name.trim())) {
+                is ApiResult.Success -> result.value
+                is ApiResult.HttpError -> {
+                    if (result.status == 401 || result.status == 403) onAuthInvalid()
+                    false
+                }
+                else -> false
+            }
+        }
 }
 
 

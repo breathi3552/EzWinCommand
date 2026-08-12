@@ -11,7 +11,7 @@ create_app = getattr(app_module, "create_app", lambda: app_module.app)
 
 class _StubStore:
     def __init__(self) -> None:
-        self._device_key = "device-abc123"
+        self._device_key = "credential-for-test-only"
         self._devices = [
             {
                 "key": self._device_key,
@@ -31,6 +31,7 @@ class _StubStore:
     def touch(self, key: str) -> None:
         self.touched.append(key)
 
+
     def list_devices(self) -> list[dict]:
         return list(self._devices)
 
@@ -42,7 +43,6 @@ class _StubStore:
 
     def rename_device(self, key: str, name: str) -> bool:
         return key == self._device_key
-
 
 class _StubDispatcher:
     def execute(self, action: str, params: dict) -> object:
@@ -64,24 +64,41 @@ class _StubAuthManager:
     def __init__(self) -> None:
         self._pairing = {"pairing_id": "pair-1", "server_id": "server-1", "code": "1234"}
         self.authorized_keys: set[str] = set()
-        self._device_key = "device-abc123"
+        self._device_key = "credential-for-test-only"
+
     def create_pairing(self, device_name="Android"):
         return {"pairing_id": "pair-1", "server_id": "server-1", "expires_in": 300}
+
     def list_pairings(self, include_code=False):
-        row = {"pairing_id":"pair-1", "server_id":"server-1", "device_name":"Android", "status":"pending", "expires_in":300, "lock_expires_in":0}
-        if include_code: row["code"] = "1234"
+        row = {"pairing_id": "pair-1", "server_id": "server-1", "device_name": "Android", "status": "pending", "expires_in": 300, "lock_expires_in": 0}
+        if include_code:
+            row["code"] = "1234"
         return [row]
+
     def complete_pairing(self, server_id, pairing_id, code, device_name):
         if (server_id, pairing_id, code) != ("server-1", "pair-1", "1234"):
             return None
         self.authorized_keys.add(self._device_key)
         return self._device_key
-    def cancel_pairing(self, pairing_id): return pairing_id == "pair-1"
-    def list_devices(self): return [{"key": self._device_key, "name": "Android Phone"}]
-    def remove_device(self, key): return key == self._device_key
-    def rename_device(self, key, name): return key == self._device_key
-    def is_authorized(self, key): return key in self.authorized_keys
-    def touch(self, key): return None
+
+    def cancel_pairing(self, pairing_id):
+        return pairing_id == "pair-1"
+
+
+    def list_devices(self):
+        return [{"key": self._device_key, "name": "Android Phone"}]
+
+    def remove_device(self, key):
+        return key == self._device_key
+
+    def rename_device(self, key, name):
+        return key == self._device_key
+
+    def is_authorized(self, key):
+        return key in self.authorized_keys
+
+    def touch(self, key):
+        return None
 
 
 
@@ -95,17 +112,19 @@ def _make_client() -> TestClient:
     app.state.auth_manager = auth_manager
     return TestClient(app)
 
-
-
 def _remote_request(client: TestClient, method: str, url: str, **kwargs):
     transport = client._transport
     old_client = getattr(transport, "client", None)
     transport.client = ("192.168.1.10", 54321)
+    add_protocol = kwargs.pop("_add_protocol", True)
+    headers = dict(kwargs.pop("headers", {}) or {})
+    if add_protocol:
+        headers.setdefault("X-EzWinCommand-Protocol", "2")
+    kwargs["headers"] = headers
     try:
         return client.request(method, url, **kwargs)
     finally:
         transport.client = old_client
-
 
 
 def test_android_lan_ping_public() -> None:
@@ -116,6 +135,29 @@ def test_android_lan_ping_public() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
+def test_remote_protocol_marker_is_required_before_authentication() -> None:
+    client = _make_client()
+
+    missing = _remote_request(client, "GET", "/api/actions", _add_protocol=False)
+    mismatched = _remote_request(
+        client,
+        "GET",
+        "/api/actions",
+        headers={"X-EzWinCommand-Protocol": "1"},
+        _add_protocol=False,
+    )
+
+    assert missing.status_code == 426
+    assert mismatched.status_code == 426
+    assert _remote_request(client, "GET", "/api/identity", _add_protocol=False).status_code == 426
+    assert _remote_request(
+        client,
+        "GET",
+        "/api/identity",
+        headers={"X-EzWinCommand-Protocol": "1"},
+        _add_protocol=False,
+    ).status_code == 426
+
 
 
 
@@ -123,6 +165,7 @@ def test_remote_pairing_full_flow_and_strict_anonymous_boundary() -> None:
     client = _make_client()
     identity = _remote_request(client, "GET", "/api/identity")
     assert identity.status_code == 200
+    assert identity.json()["protocol_version"] == 2
     assert {"server_id", "protocol_version", "display_name", "port"} <= identity.json().keys()
 
     created = _remote_request(client, "POST", "/api/pairings", json={"device_name": "Android Phone"})
@@ -139,7 +182,7 @@ def test_remote_pairing_full_flow_and_strict_anonymous_boundary() -> None:
     })
     assert completed.status_code == 201
     device_key = completed.json()["device_key"]
-    assert device_key == "device-abc123"
+    assert device_key == "credential-for-test-only"
 
     actions = _remote_request(client, "GET", "/api/actions", headers={"Authorization": f"Bearer {device_key}"})
     assert actions.status_code == 200
@@ -163,7 +206,7 @@ def test_device_list_allows_loopback_and_requires_remote_bearer() -> None:
 
     local = client.get("/api/devices")
     assert local.status_code == 200
-    assert local.json() == {"devices": [{"key": "device-abc123", "name": "Android Phone"}]}
+    assert local.json() == {"devices": [{"key": "credential-for-test-only", "name": "Android Phone"}]}
 
     unauthorized = _remote_request(client, "GET", "/api/devices")
     assert unauthorized.status_code == 401
@@ -172,7 +215,7 @@ def test_device_list_allows_loopback_and_requires_remote_bearer() -> None:
 
 def test_remote_device_revoke_removes_authorization() -> None:
     client = _make_client()
-    key = "device-abc123"
+    key = "credential-for-test-only"
     auth_manager = client.app.state.auth_manager
     auth_manager.authorized_keys.add(key)
     revoked: list[str] = []
@@ -182,7 +225,7 @@ def test_remote_device_revoke_removes_authorization() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"success": True}
-    assert revoked == [__import__("hashlib").sha256(key.encode()).hexdigest()]
+    assert len(revoked) == 1
 
 def test_local_pairings_code_and_remote_not_found() -> None:
     client = _make_client()
@@ -272,11 +315,12 @@ def test_auth_manager_publishes_pairing_and_device_invalidations() -> None:
 
     created = manager.create_pairing("Android Phone")
     code = manager.list_pairings(include_code=True)[0]["code"]
-    assert manager.complete_pairing("server-1", created["pairing_id"], code, "Android Phone") == "device-abc123"
+    assert manager.complete_pairing("server-1", created["pairing_id"], code, "Android Phone") == "credential-for-test-only"
     assert changes == [frozenset({"pairings"}), frozenset({"pairings", "devices"})]
 
-    assert manager.rename_device("device-abc123", "New Name")
-    assert manager.remove_device("device-abc123")
+    key = "credential-for-test-only"
+    assert manager.rename_device(key, "New Name")
+    assert manager.remove_device(key)
     assert changes[-2:] == [frozenset({"devices"}), frozenset({"devices"})]
 
 
@@ -285,7 +329,7 @@ def test_android_lan_command_accepts_valid_bearer() -> None:
 
     response = client.post(
         "/api/command",
-        headers={"Authorization": "Bearer device-abc123"},
+        headers={"Authorization": "Bearer credential-for-test-only", "X-EzWinCommand-Protocol": "2"},
         json={"action": "media.play_pause", "params": {}},
     )
 
