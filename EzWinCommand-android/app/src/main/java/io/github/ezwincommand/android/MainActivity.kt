@@ -50,6 +50,8 @@ import io.github.ezwincommand.android.ui.control.MediaAction
 import io.github.ezwincommand.android.ui.control.MediaControlIntent
 import io.github.ezwincommand.android.ui.control.MediaVolumeActor
 import io.github.ezwincommand.android.ui.control.ControlPageGate
+import io.github.ezwincommand.android.ui.control.applyDeviceRevoke
+import io.github.ezwincommand.android.ui.control.DeviceRevokeTransition
 import io.github.ezwincommand.android.ui.control.mergeReadyWithMedia
 import io.github.ezwincommand.android.ui.control.ControlUiState
 import kotlinx.coroutines.Job
@@ -723,30 +725,50 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        revokeInvoker = { value ->
+        revokeInvoker = { deviceId ->
             lifecycleScope.launch {
-                val revoked = controller.revokeDevice(value)
-                if (!revoked) {
-                    showTopMessage(errorMessage(getString(R.string.control_revoke_failed)))
-                    return@launch
+                val knownDevices = activeReadyState?.devices.orEmpty()
+                when (
+                    val transition = applyDeviceRevoke(
+                        deviceId = deviceId,
+                        devices = knownDevices,
+                        revoke = controller::revokeDevice,
+                        onSelfRevoked = {
+                            val removed = connectionRepository.removeSession(serverId)
+                            if (removed) returnToPairing(baseUrl)
+                            removed
+                        },
+                        refresh = controller::load,
+                    )
+                ) {
+                    DeviceRevokeTransition.Failed -> {
+                        showTopMessage(errorMessage(getString(R.string.control_revoke_failed)))
+                    }
+                    DeviceRevokeTransition.CleanupFailed -> {
+                        connectionRepository.invalidate(serverId)
+                        returnToPairing(baseUrl)
+                        showTopMessage(getString(R.string.control_revoke_cleanup_failed))
+                    }
+                    DeviceRevokeTransition.ReturnedToPairing -> {
+                        showTopMessage(getString(R.string.control_revoke_success))
+                    }
+                    is DeviceRevokeTransition.Refreshed -> {
+                        showTopMessage(getString(R.string.control_revoke_success))
+                        val refreshed = transition.state
+                        activeReadyState = refreshed as? ControlUiState.Ready
+                        coordinator.updateControlState(serverId, baseUrl, refreshed)
+                        screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
+                    }
                 }
-                if (value == activeReadyState?.currentDeviceKey) {
-                    connectionRepository.removeSession(serverId)
-                    showTopMessage(getString(R.string.control_revoke_success))
-                    returnToPairing(baseUrl)
-                    return@launch
-                }
-                showTopMessage(getString(R.string.control_revoke_success))
-                val refreshed = controller.load()
-                coordinator.updateControlState(serverId, baseUrl, refreshed)
-                screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
             }
         }
-        renameInvoker = { value, name ->
+        renameInvoker = { deviceId, name ->
             lifecycleScope.launch {
-                val renamed = controller.renameDevice(value, name)
+                val renamed = controller.renameDevice(deviceId, name)
                 showTopMessage(if (renamed) getString(R.string.control_rename_device_success) else errorMessage(getString(R.string.control_rename_device_failed)))
+                if (!renamed) return@launch
                 val refreshed = controller.load()
+                activeReadyState = refreshed as? ControlUiState.Ready
                 coordinator.updateControlState(serverId, baseUrl, refreshed)
                 screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
             }
@@ -863,7 +885,7 @@ class MainActivity : AppCompatActivity() {
             serverId,
             session.credentialVersion,
         )
-        return ControlController(apiClient, currentDeviceKeyProvider = { connectionRepository.deviceKey(serverId) }, onAuthInvalid = {
+        return ControlController(apiClient, onAuthInvalid = {
             lifecycleScope.launch {
                 renderEffect(coordinator.onAuthInvalid(serverId))
                 showTopMessage(errorMessage(getString(R.string.main_restore_failed)))

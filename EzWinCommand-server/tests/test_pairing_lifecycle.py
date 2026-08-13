@@ -8,10 +8,22 @@ from agent.server_identity import ServerIdentity
 
 
 class _Store:
-    def add_device(self, name): return "key"
-    def is_authorized(self, key): return True
-    def touch(self, key): pass
-
+    def add_device(self, name):
+        return "key"
+    def is_authorized(self, key):
+        return True
+    def touch(self, key):
+        pass
+    def device_id_for_key(self, key):
+        return "device-id"
+    def key_for_device_id(self, device_id):
+        return "key"
+    def list_devices(self, current_device_id=None):
+        return [{"device_id": "device-id", "is_current": current_device_id == "device-id"}]
+    def remove_device(self, device_id):
+        return device_id == "device-id"
+    def rename_device(self, device_id, name):
+        return device_id == "device-id"
 
 def test_pairing_list_exposes_attempts_lock_recovers_and_terminal_retains(monkeypatch):
     clock = [1000.0]

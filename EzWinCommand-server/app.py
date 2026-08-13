@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 
 
-def create_app(media_service: MediaService | None = None) -> FastAPI:
+def create_app(
+    media_service: MediaService | None = None,
+    device_store: DeviceStore | None = None,
+) -> FastAPI:
     service = media_service or MediaService()
     identity = load_server_identity(BASE_DIR / "agent" / "server_identity.json", "EzWinCommand Server")
     publisher = DiscoveryPublisher(identity, config.PORT, config.HOST)
@@ -42,15 +45,16 @@ def create_app(media_service: MediaService | None = None) -> FastAPI:
         application.state.media_event_hub = media_hub
         application.state.local_event_hub = local_hub
         application.state.auth_manager.set_change_listener(local_hub.publish)
+        application.state.auth_manager.set_revoke_listener(media_hub.revoke)
         try:
             service.start()
             # 发布失败仅隔离发现能力，HTTP 服务继续启动。
             await asyncio.to_thread(publisher.start)
             yield
         finally:
-            # 先注销 mDNS，再停止护屏监听和媒体服务，避免退出时遗留后台资源。
             await asyncio.to_thread(publisher.close)
             application.state.auth_manager.set_change_listener(None)
+            application.state.auth_manager.set_revoke_listener(None)
             local_hub.close()
             media_hub.close()
             dispatcher.close()
@@ -67,7 +71,7 @@ def create_app(media_service: MediaService | None = None) -> FastAPI:
     application.state.async_command_service = AsyncCommandService(dispatcher, task_store)
     application.include_router(api_router)
 
-    device_store = DeviceStore(BASE_DIR / "agent" / "devices.json")
+    device_store = device_store or DeviceStore(BASE_DIR / "agent" / "devices.json")
     auth_manager = AuthManager(device_store, server_id=identity.server_id)
     application.state.auth_manager = auth_manager
     application.state.pairing_manager = auth_manager

@@ -5,6 +5,7 @@
 const DEVICE_KEY_STORAGE = "ez_device_key";
 const WIRE_PROTOCOL_VERSION = 2;
 const DEVICE_POLL_MS = 30000;    // 外部设备列表轮询间隔
+let extDevicePollTimer = null;
 
 // ============================================================
 // 工具函数
@@ -328,32 +329,35 @@ async function pcLoadDevices() {
 
         for (const dev of devices) {
             const tr = document.createElement("tr");
+            const tdId = document.createElement("td");
+            tdId.textContent = dev.device_id;
+            tr.appendChild(tdId);
 
-            // 设备名（可点击编辑）
             const tdName = document.createElement("td");
             tdName.className = "device-name-cell";
             const nameSpan = document.createElement("span");
             nameSpan.textContent = dev.name;
             nameSpan.className = "device-name-text";
             nameSpan.title = "点击编辑名称";
-            nameSpan.addEventListener("click", () => pcStartRename(dev.key, dev.name, nameSpan));
+            nameSpan.addEventListener("click", () => pcStartRename(dev.device_id, dev.name, nameSpan));
             tdName.appendChild(nameSpan);
             tr.appendChild(tdName);
 
-            // 最后活跃
+            const tdCreated = document.createElement("td");
+            tdCreated.textContent = formatTime(dev.created_at);
+            tr.appendChild(tdCreated);
+
             const tdLastSeen = document.createElement("td");
             tdLastSeen.textContent = formatTime(dev.last_seen);
             tr.appendChild(tdLastSeen);
 
-            // 操作
             const tdAction = document.createElement("td");
             const revokeBtn = document.createElement("button");
             revokeBtn.className = "revoke-btn";
             revokeBtn.textContent = "撤销";
-            revokeBtn.addEventListener("click", () => pcRevokeDevice(dev.key, tr));
+            revokeBtn.addEventListener("click", () => pcRevokeDevice(dev.device_id, tr));
             tdAction.appendChild(revokeBtn);
             tr.appendChild(tdAction);
-
             tbody.appendChild(tr);
         }
     } catch {
@@ -362,8 +366,7 @@ async function pcLoadDevices() {
 }
 
 /** 开始重命名：将 span 替换为 input */
-function pcStartRename(key, currentName, spanEl) {
-    // 如果已有编辑中的 input，先取消
+function pcStartRename(deviceId, currentName, spanEl) {
     const existing = document.querySelector(".device-name-input");
     if (existing) {
         pcCancelRename(existing);
@@ -373,7 +376,7 @@ function pcStartRename(key, currentName, spanEl) {
     input.type = "text";
     input.className = "device-name-input";
     input.value = currentName;
-    input.setAttribute("data-device-key", key);
+    input.setAttribute("data-device-id", deviceId);
     input.setAttribute("data-original-name", currentName);
 
     spanEl.replaceWith(input);
@@ -388,7 +391,6 @@ function pcStartRename(key, currentName, spanEl) {
         }
     });
     input.addEventListener("blur", () => {
-        // 延迟执行，让 Enter/Escape 先触发
         setTimeout(() => {
             if (document.body.contains(input)) {
                 pcCancelRename(input);
@@ -399,7 +401,7 @@ function pcStartRename(key, currentName, spanEl) {
 
 /** 提交重命名 */
 async function pcCommitRename(inputEl) {
-    const key = inputEl.getAttribute("data-device-key");
+    const deviceId = inputEl.getAttribute("data-device-id");
     const newName = inputEl.value.trim();
     const originalName = inputEl.getAttribute("data-original-name");
 
@@ -409,7 +411,7 @@ async function pcCommitRename(inputEl) {
     }
 
     try {
-        const data = await fetchJson("/api/devices/" + encodeURIComponent(key), {
+        const data = await fetchJson("/api/devices/" + encodeURIComponent(deviceId), {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name: newName }),
@@ -432,17 +434,17 @@ function pcCancelRename(inputEl) {
     span.textContent = originalName;
     span.className = "device-name-text";
     span.title = "点击编辑名称";
-    const key = inputEl.getAttribute("data-device-key");
-    span.addEventListener("click", () => pcStartRename(key, originalName, span));
+    const deviceId = inputEl.getAttribute("data-device-id");
+    span.addEventListener("click", () => pcStartRename(deviceId, originalName, span));
     inputEl.replaceWith(span);
 }
 
 /** 撤销设备授权 */
-async function pcRevokeDevice(key, rowEl) {
+async function pcRevokeDevice(deviceId, rowEl) {
     if (!confirm("确定要撤销此设备的授权吗？")) return;
 
     try {
-        const data = await fetchJson("/api/devices/" + encodeURIComponent(key), {
+        const data = await fetchJson("/api/devices/" + encodeURIComponent(deviceId), {
             method: "DELETE",
         }, "pc-error");
         if (data.success) {
@@ -454,6 +456,7 @@ async function pcRevokeDevice(key, rowEl) {
         // 错误已在页面显示
     }
 }
+
 
 // ---- PC 控制面板 ----
 
@@ -480,6 +483,7 @@ async function initPCPanel() {
 
     document.getElementById("pc-refresh-btn").addEventListener("click", pcRefreshPairings);
     pcStartEvents();
+    pcRefreshSnapshots();
 
     // 加载操作按钮
     pcLoadActions();
@@ -493,6 +497,10 @@ async function initPCPanel() {
 
 /** 显示配对待机页 */
 function extShowStandby() {
+    if (extDevicePollTimer !== null) {
+        clearInterval(extDevicePollTimer);
+        extDevicePollTimer = null;
+    }
     document.getElementById("ext-standby").style.display = "";
     document.getElementById("ext-dashboard").style.display = "none";
 }
@@ -505,7 +513,8 @@ function extShowDashboard() {
     document.getElementById("ext-dashboard").style.display = "";
     extLoadActions();
     extLoadDevices();
-    setInterval(extLoadDevices, DEVICE_POLL_MS);
+    clearInterval(extDevicePollTimer);
+    extDevicePollTimer = setInterval(extLoadDevices, DEVICE_POLL_MS);
 }
 
 function extReturnToPairing() {
@@ -529,8 +538,6 @@ async function extSendCommand(action, params = {}) {
     catch (e) { console.error("命令发送失败:", e); }
 }
 
-// ---- 外部设备管理 ----
-
 async function extLoadDevices() {
     try {
         const data = await authFetchJson("/api/devices");
@@ -547,9 +554,16 @@ async function extLoadDevices() {
 
         for (const dev of devices) {
             const tr = document.createElement("tr");
-
+            const tdId = document.createElement("td");
+            tdId.textContent = dev.device_id;
+            tr.appendChild(tdId);
             const tdName = document.createElement("td");
-            tdName.textContent = dev.name;
+            const nameBtn = document.createElement("button");
+            nameBtn.className = "device-name-text";
+            nameBtn.textContent = dev.name;
+            nameBtn.title = "点击编辑名称";
+            nameBtn.addEventListener("click", () => extRenameDevice(dev.device_id, dev.name));
+            tdName.appendChild(nameBtn);
             tr.appendChild(tdName);
 
             const tdCreated = document.createElement("td");
@@ -561,13 +575,17 @@ async function extLoadDevices() {
             tr.appendChild(tdLastSeen);
 
             const tdAction = document.createElement("td");
+            const renameBtn = document.createElement("button");
+            renameBtn.className = "rename-btn";
+            renameBtn.textContent = "重命名";
+            renameBtn.addEventListener("click", () => extRenameDevice(dev.device_id, dev.name));
+            tdAction.appendChild(renameBtn);
             const revokeBtn = document.createElement("button");
             revokeBtn.className = "revoke-btn";
             revokeBtn.textContent = "撤销";
-            revokeBtn.addEventListener("click", () => extRevokeDevice(dev.key, tr));
+            revokeBtn.addEventListener("click", () => extRevokeDevice(dev.device_id, tr, dev.is_current));
             tdAction.appendChild(revokeBtn);
             tr.appendChild(tdAction);
-
             tbody.appendChild(tr);
         }
     } catch {
@@ -575,15 +593,32 @@ async function extLoadDevices() {
     }
 }
 
-async function extRevokeDevice(key, rowEl) {
+async function extRenameDevice(deviceId, currentName) {
+    const name = window.prompt("请输入新的设备名称", currentName);
+    if (name === null || !name.trim() || name.trim() === currentName) return;
+    try {
+        const data = await authFetchJson("/api/devices/" + encodeURIComponent(deviceId), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name.trim() }),
+        });
+        if (data.success) {
+            await extLoadDevices();
+        }
+    } catch {
+        // 错误已在页面显示
+    }
+}
+
+async function extRevokeDevice(deviceId, rowEl, isCurrent) {
     if (!confirm("确定要撤销此设备的授权吗？")) return;
 
     try {
-        const data = await authFetchJson("/api/devices/" + encodeURIComponent(key), {
+        const data = await authFetchJson("/api/devices/" + encodeURIComponent(deviceId), {
             method: "DELETE",
         });
         if (data.success) {
-            if (key === storedKey()) {
+            if (isCurrent) {
                 clearStoredKey();
                 await extReturnToPairing();
             } else {
@@ -592,6 +627,7 @@ async function extRevokeDevice(key, rowEl) {
                 if (tbody.children.length === 0) {
                     document.getElementById("ext-device-empty").style.display = "";
                 }
+                await extLoadDevices();
             }
         } else {
             setUiError("ext-error", data.message || "撤销设备失败");
@@ -606,7 +642,7 @@ async function extRevokeDevice(key, rowEl) {
 async function initExternal() {
     document.getElementById("external-page").style.display = "";
 
-    // 情况 1：本地有 device_key → 先用 /api/actions 校验，再进入控制面板
+    // 情况 1：本地有 Device Key → 先用 /api/actions 校验，再进入控制面板
     if (storedKey()) {
         try {
             await authFetchJson("/api/actions");

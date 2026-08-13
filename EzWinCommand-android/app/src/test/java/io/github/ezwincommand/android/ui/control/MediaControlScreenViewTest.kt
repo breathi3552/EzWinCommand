@@ -192,14 +192,16 @@ class MediaControlScreenViewTest {
     }
 
     @Test
-    fun `device popup uses icon actions current badge and delete confirmation`() {
+    fun `device popup uses isCurrent badge and device ids for actions`() {
         val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
         val screen = ControlScreen(activity)
         activity.setContentView(screen)
         val revoked = mutableListOf<String>()
         screen.renderDevices(
-            listOf(DeviceInfo("current", "我的手机", null, null), DeviceInfo("other", "平板电脑", null, null)),
-            "current",
+            listOf(
+                DeviceInfo("current-id", "我的手机", null, null, isCurrent = true),
+                DeviceInfo("other-id", "平板电脑", null, null, isCurrent = false),
+            ),
             revoked::add,
             { _, _ -> },
         )
@@ -240,17 +242,17 @@ class MediaControlScreenViewTest {
         val screen = ControlScreen(activity)
         activity.setContentView(screen)
         val initialDevices = listOf(
-            DeviceInfo("current", "我的手机", null, null),
-            DeviceInfo("other", "平板电脑", null, null),
+            DeviceInfo("current", "我的手机", null, null, isCurrent = true),
+            DeviceInfo("other", "平板电脑", null, null, isCurrent = false),
         )
-        screen.renderDevices(initialDevices, "current", {}, { _, _ -> })
+        screen.renderDevices(initialDevices, {}, { _, _ -> })
 
         screen.findViewById<View>(R.id.control_device_management).performClick()
         shadowOf(android.os.Looper.getMainLooper()).idle()
         val popup = screen.devicesPopupForTest()!!
         assertEquals(2, findViews(popup.contentView) { it.id == R.id.control_device_row }.size)
 
-        screen.renderDevices(listOf(initialDevices[1]), null, {}, { _, _ -> })
+        screen.renderDevices(listOf(initialDevices[1]), {}, { _, _ -> })
         shadowOf(android.os.Looper.getMainLooper()).idle()
 
         val rows = findViews(popup.contentView) { it.id == R.id.control_device_row }

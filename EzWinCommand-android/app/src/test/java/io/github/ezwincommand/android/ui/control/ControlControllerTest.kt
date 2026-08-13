@@ -40,14 +40,17 @@ class ControlControllerTest {
     }
 
     @Test
-    fun `load marks current device key`() = runBlocking {
+    fun `load uses server isCurrent flag instead of device credential`() = runBlocking {
         val controller = ControlController(
-            fakeClient(devices = listOf(DeviceInfo("device-key", "手机", null, null))),
-            currentDeviceKeyProvider = { "device-key" },
+            fakeClient(devices = listOf(
+                DeviceInfo("device-id", "手机", null, null, isCurrent = true),
+                DeviceInfo("other-id", "平板", null, null, isCurrent = false),
+            )),
             onAuthInvalid = {},
         )
         val state = controller.load() as ControlUiState.Ready
-        assertEquals("device-key", state.currentDeviceKey)
+        assertTrue(state.devices.single { it.deviceId == "device-id" }.isCurrent)
+        assertFalse(state.devices.single { it.deviceId == "other-id" }.isCurrent)
     }
 
     @Test
@@ -101,31 +104,30 @@ class ControlControllerTest {
         assertTrue(state is ControlUiState.Error)
         assertEquals(1, authInvalidCount)
     }
-
     @Test
-    fun `revoke device returns true on success`() = runBlocking {
+    fun `revoke device uses stable device id`() = runBlocking {
         val controller = ControlController(fakeClient(), onAuthInvalid = {})
-        assertTrue(controller.revokeDevice("k"))
+        assertTrue(controller.revokeDevice("device-id"))
     }
 
     @Test
     fun `revoke device invokes auth invalid on 403`() = runBlocking {
         var authInvalidCount = 0
         val controller = ControlController(fakeClient(httpStatus = 403), onAuthInvalid = { authInvalidCount++ })
-        assertFalse(controller.revokeDevice("k"))
+        assertFalse(controller.revokeDevice("device-id"))
         assertEquals(1, authInvalidCount)
     }
 
     @Test
     fun `rename device returns true on success`() = runBlocking {
         val controller = ControlController(fakeClient(), onAuthInvalid = {})
-        assertTrue(controller.renameDevice("k", "新手机"))
+        assertTrue(controller.renameDevice("device-id", "新手机"))
     }
 
     @Test
     fun `rename device rejects blank names`() = runBlocking {
         val controller = ControlController(fakeClient(), onAuthInvalid = {})
-        assertFalse(controller.renameDevice("k", "   "))
+        assertFalse(controller.renameDevice("device-id", "   "))
     }
 
     @Test
@@ -151,6 +153,83 @@ class ControlControllerTest {
     }
 
     @Test
+    fun `self revoke removes session and returns to pairing without refreshing`() = runBlocking {
+        var revokedId: String? = null
+        var removedSession = false
+        var refreshCalls = 0
+        val transition = applyDeviceRevoke(
+            deviceId = "current-id",
+            devices = listOf(
+                DeviceInfo("current-id", "手机", null, null, isCurrent = true),
+                DeviceInfo("other-id", "平板", null, null, isCurrent = false),
+            ),
+            revoke = { revokedId = it; true },
+            onSelfRevoked = { removedSession = true; true },
+            refresh = { refreshCalls++; ControlUiState.Error("unexpected", false) },
+        )
+
+        assertTrue(transition === DeviceRevokeTransition.ReturnedToPairing)
+        assertEquals("current-id", revokedId)
+        assertTrue(removedSession)
+        assertEquals(0, refreshCalls)
+    }
+
+    @Test
+    fun `self revoke cleanup failure does not report success`() = runBlocking {
+        val transition = applyDeviceRevoke(
+            deviceId = "current-id",
+            devices = listOf(DeviceInfo("current-id", "手机", null, null, isCurrent = true)),
+            revoke = { true },
+            onSelfRevoked = { false },
+            refresh = { ControlUiState.Error("unexpected", false) },
+        )
+
+        assertTrue(transition === DeviceRevokeTransition.CleanupFailed)
+    }
+
+    @Test
+    fun `remote revoke keeps control and refreshes authoritative devices`() = runBlocking {
+        var removedSession = false
+        var refreshCalls = 0
+        val expected = ControlUiState.Ready(
+            actions = emptyList(),
+            devices = listOf(DeviceInfo("current-id", "手机", null, null, isCurrent = true)),
+        )
+        val transition = applyDeviceRevoke(
+            deviceId = "other-id",
+            devices = listOf(
+                DeviceInfo("current-id", "手机", null, null, isCurrent = true),
+                DeviceInfo("other-id", "平板", null, null, isCurrent = false),
+            ),
+            revoke = { true },
+            onSelfRevoked = { removedSession = true; true },
+            refresh = { refreshCalls++; expected },
+        )
+
+        assertTrue(transition is DeviceRevokeTransition.Refreshed)
+        assertEquals(expected, (transition as DeviceRevokeTransition.Refreshed).state)
+        assertFalse(removedSession)
+        assertEquals(1, refreshCalls)
+    }
+
+    @Test
+    fun `failed revoke leaves session and control state untouched`() = runBlocking {
+        var removedSession = false
+        var refreshCalls = 0
+        val transition = applyDeviceRevoke(
+            deviceId = "missing-id",
+            devices = listOf(DeviceInfo("current-id", "手机", null, null, isCurrent = true)),
+            revoke = { false },
+            onSelfRevoked = { removedSession = true; true },
+            refresh = { refreshCalls++; ControlUiState.Error("unexpected", false) },
+        )
+
+        assertTrue(transition === DeviceRevokeTransition.Failed)
+        assertFalse(removedSession)
+        assertEquals(0, refreshCalls)
+    }
+
+    @Test
     fun `close cancels tracking ownership and closes client once`() {
         var closes = 0
         val client = object : EzApiClient("http://127.0.0.1:8080", { "k" }) {
@@ -161,10 +240,9 @@ class ControlControllerTest {
         assertEquals(1, closes)
     }
 
-
     private fun fakeClient(
         actions: List<ActionPlugin> = listOf(ActionPlugin("power", "电源", "desc", "1", listOf(SubAction("sleep", "睡眠")))),
-        devices: List<DeviceInfo> = listOf(DeviceInfo("k", "手机", null, null)),
+        devices: List<DeviceInfo> = listOf(DeviceInfo("device-id", "手机", null, null)),
         commandResult: CommandResult = CommandResult(true, "ok", emptyMap()),
         httpStatus: Int? = null,
         mediaResult: ApiResult<MediaState> = ApiResult.NetworkError("media unavailable"),
@@ -174,8 +252,8 @@ class ControlControllerTest {
             override suspend fun listActions(): ApiResult<List<ActionPlugin>> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(actions)
             override suspend fun listDevices(): ApiResult<List<DeviceInfo>> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(devices)
             override suspend fun executeCommand(action: String, params: Map<String, Any?>): ApiResult<CommandResult> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(commandResult)
-            override suspend fun revokeDevice(deviceKey: String): ApiResult<Boolean> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(true)
-            override suspend fun renameDevice(deviceKey: String, name: String): ApiResult<Boolean> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(true)
+            override suspend fun revokeDevice(deviceId: String): ApiResult<Boolean> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(true)
+            override suspend fun renameDevice(deviceId: String, name: String): ApiResult<Boolean> = if (httpStatus != null) ApiResult.HttpError(httpStatus, "auth invalid") else ApiResult.Success(true)
         }
     }
 }

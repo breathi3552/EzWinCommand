@@ -63,6 +63,7 @@
     <string name="control_revoke_device">撤销 %1$s</string>
     <string name="control_revoke_success">已撤销。</string>
     <string name="control_revoke_failed">撤销失败。</string>
+    <string name="control_revoke_cleanup_failed">设备已撤销，但本机会话清理失败，请重新连接以修复。</string>
     <string name="control_devices_collapsed">设备（%1$d）</string>
     <string name="control_devices_expanded">收起设备（%1$d）</string>
     <string name="control_current_device">本机</string>

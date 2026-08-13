@@ -126,10 +126,21 @@ class DeviceStore:
             self._commit({"devices": devices})
             return key
 
-    def remove_device(self, key: str) -> bool:
-        """按现有 Device Key 撤销一台设备；device_id 管理切换由后续任务完成。"""
+    def _key_for_device_id_unlocked(self, device_id: str) -> str | None:
+        return next(
+            (
+                device_key
+                for device_key, record in self._data["devices"].items()
+                if isinstance(record, dict) and record.get("device_id") == device_id
+            ),
+            None,
+        )
+
+    def remove_device(self, device_id: str) -> bool:
+        """按稳定的 device_id 撤销一台设备。"""
         with self._lock:
-            if key not in self._data["devices"]:
+            key = self._key_for_device_id_unlocked(device_id)
+            if key is None:
                 return False
             devices = {
                 device_key: dict(record)
@@ -137,6 +148,7 @@ class DeviceStore:
                 if device_key != key
             }
             self._commit({"devices": devices})
+            self._last_seen_writes.pop(key, None)
             return True
 
     def is_authorized(self, key: str) -> bool:
@@ -152,7 +164,10 @@ class DeviceStore:
                 return None
             value = record.get("device_id")
             return value if isinstance(value, str) and value else None
-
+    def key_for_device_id(self, device_id: str) -> str | None:
+        """将稳定的 device_id 映射到内部鉴权 Device Key。"""
+        with self._lock:
+            return self._key_for_device_id_unlocked(device_id)
 
     def touch(self, key: str) -> None:
         """更新设备的 last_seen 时间戳，同一设备 30 秒内最多落盘一次。"""
@@ -169,17 +184,18 @@ class DeviceStore:
             self._commit({"devices": devices})
             self._last_seen_writes[key] = now_ts
 
-    def list_devices(self) -> list[dict]:
-        """保持现有设备管理 wire，device_id 暂只作为持久化关系事实。"""
+    def list_devices(self, current_device_id: str | None = None) -> list[dict]:
+        """返回不含凭据材料的权威设备列表。"""
         with self._lock:
             return [
                 {
-                    "key": key,
+                    "device_id": record.get("device_id"),
                     "name": record.get("name", ""),
                     "created_at": record.get("created_at"),
                     "last_seen": record.get("last_seen"),
+                    "is_current": record.get("device_id") == current_device_id,
                 }
-                for key, record in self._data["devices"].items()
+                for record in self._data["devices"].values()
             ]
 
     def has_any_device(self) -> bool:
@@ -187,10 +203,11 @@ class DeviceStore:
         with self._lock:
             return bool(self._data["devices"])
 
-    def rename_device(self, key: str, name: str) -> bool:
-        """按现有 Device Key 重命名设备；device_id 管理切换由后续任务完成。"""
+    def rename_device(self, device_id: str, name: str) -> bool:
+        """按稳定的 device_id 重命名一台设备。"""
         with self._lock:
-            if key not in self._data["devices"]:
+            key = self._key_for_device_id_unlocked(device_id)
+            if key is None:
                 return False
             devices = {device_key: dict(record) for device_key, record in self._data["devices"].items()}
             devices[key]["name"] = name

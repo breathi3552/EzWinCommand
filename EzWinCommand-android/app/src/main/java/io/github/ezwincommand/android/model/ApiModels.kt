@@ -113,8 +113,9 @@ data class CommandStatus(
 )
 
 data class DeviceInfo(
-    val key: String,
+    val deviceId: String,
     val name: String,
     val createdAt: String?,
     val lastSeen: String?,
+    val isCurrent: Boolean = false,
 )

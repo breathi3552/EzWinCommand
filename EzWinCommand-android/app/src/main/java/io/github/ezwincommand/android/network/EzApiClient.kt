@@ -162,20 +162,20 @@ open class EzApiClient(
         parser = { body -> parseDevices(body.optJSONArray("devices")) },
     )
 
-    open suspend fun revokeDevice(deviceKey: String): ApiResult<Boolean> = request(
+    open suspend fun revokeDevice(deviceId: String): ApiResult<Boolean> = request(
         method = "DELETE",
-        path = "/api/devices/${encodePathSegment(deviceKey)}",
+        path = "/api/devices/${encodePathSegment(deviceId)}",
         authenticated = true,
         parser = { body -> body.optBoolean("success", false) },
     )
-
-    open suspend fun renameDevice(deviceKey: String, name: String): ApiResult<Boolean> = request(
+    open suspend fun renameDevice(deviceId: String, name: String): ApiResult<Boolean> = request(
         method = "PATCH",
-        path = "/api/devices/${encodePathSegment(deviceKey)}",
+        path = "/api/devices/${encodePathSegment(deviceId)}",
         authenticated = true,
         body = JSONObject().put("name", name),
         parser = { body -> body.optBoolean("success", false) },
     )
+
 
     open suspend fun getMediaState(): ApiResult<MediaState> = request(
         method = "GET",
@@ -470,12 +470,17 @@ open class EzApiClient(
         return buildList {
             for (i in 0 until array.length()) {
                 val obj = array.optJSONObject(i) ?: continue
+                val deviceId = obj.optString("device_id", "")
+                if (deviceId.isBlank() || obj.has("key") || obj.has("device_key")) {
+                    continue
+                }
                 add(
                     DeviceInfo(
-                        key = obj.optString("key", obj.optString("device_key", "")),
+                        deviceId = deviceId,
                         name = obj.optString("name", ""),
                         createdAt = obj.optStringOrNull("created_at"),
                         lastSeen = obj.optStringOrNull("last_seen"),
+                        isCurrent = obj.optBoolean("is_current", false),
                     ),
                 )
             }

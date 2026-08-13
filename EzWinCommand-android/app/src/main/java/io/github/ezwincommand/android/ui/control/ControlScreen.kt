@@ -75,7 +75,6 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     private var mediaError: TextView? = null
     private var mediaIntent: ((MediaControlIntent) -> Unit)? = null
     private var currentDevices: List<DeviceInfo> = emptyList()
-    private var currentDeviceKey: String? = null
     private var revokeDevice: ((String) -> Unit)? = null
     private var renameDevice: ((String, String) -> Unit)? = null
     private var backToPairing: (() -> Unit)? = null
@@ -158,7 +157,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         when (state) {
             ControlUiState.Loading -> renderActions(listOf(ActionPlugin("media", context.getString(R.string.media_title), "", "", emptyList())), state, onAction, onBackToPairing, onMediaIntent)
             is ControlUiState.Error -> { actionsContainer.removeAllViews(); actionsContainer.addView(emptyView(state.message)) }
-            is ControlUiState.Ready -> { renderDevices(state.devices, state.currentDeviceKey, onRevokeDevice, onRenameDevice); renderActions(state.actions, state, onAction, onBackToPairing, onMediaIntent) }
+            is ControlUiState.Ready -> { renderDevices(state.devices, onRevokeDevice, onRenameDevice); renderActions(state.actions, state, onAction, onBackToPairing, onMediaIntent) }
         }
     }
 
@@ -336,9 +335,8 @@ class ControlScreen(context: Context) : FrameLayout(context) {
 
     private fun mediaButton(icon: Int, description: Int, enabled: Boolean, click: () -> Unit) = AppCompatImageButton(context).apply { setImageResource(icon); setBackgroundResource(R.drawable.media_icon_button); contentDescription = context.getString(description); isEnabled = enabled; alpha = if (enabled) 1f else .38f; setOnClickListener { click() } }
 
-    fun renderDevices(devices: List<DeviceInfo>, current: String?, revoke: (String) -> Unit, rename: (String, String) -> Unit) {
+    fun renderDevices(devices: List<DeviceInfo>, revoke: (String) -> Unit, rename: (String, String) -> Unit) {
         currentDevices = devices
-        currentDeviceKey = current
         revokeDevice = revoke
         renameDevice = rename
         refreshDevicesPopup()
@@ -371,8 +369,8 @@ class ControlScreen(context: Context) : FrameLayout(context) {
                 gravity = Gravity.CENTER_VERTICAL
                 minimumHeight = dp(56)
             }
-            row.addView(bodyText(device.name.ifBlank { device.key }), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            if (device.key == currentDeviceKey) {
+            row.addView(bodyText(device.name.ifBlank { device.deviceId }), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (device.isCurrent) {
                 row.addView(metaText(context.getString(R.string.control_current_device)).apply {
                     id = R.id.control_current_device_badge
                     setTextColor(color(R.color.ezwin_text))
@@ -380,10 +378,10 @@ class ControlScreen(context: Context) : FrameLayout(context) {
                     contentDescription = context.getString(R.string.control_current_device)
                 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(4) })
             }
-            row.addView(deviceIconButton(R.id.control_rename_device, R.drawable.ic_edit_24, context.getString(R.string.control_rename_device_description, device.name.ifBlank { device.key })) {
-                showRenameDialog(device) { key, name -> renameDevice?.invoke(key, name) }
+            row.addView(deviceIconButton(R.id.control_rename_device, R.drawable.ic_edit_24, context.getString(R.string.control_rename_device_description, device.name.ifBlank { device.deviceId })) {
+                showRenameDialog(device) { id, name -> renameDevice?.invoke(id, name) }
             }, LinearLayout.LayoutParams(dp(48), dp(48)))
-            row.addView(deviceIconButton(R.id.control_delete_device, R.drawable.ic_delete_24, context.getString(R.string.control_delete_device_description, device.name.ifBlank { device.key })) {
+            row.addView(deviceIconButton(R.id.control_delete_device, R.drawable.ic_delete_24, context.getString(R.string.control_delete_device_description, device.name.ifBlank { device.deviceId })) {
                 confirmDeleteDevice(device)
             }, LinearLayout.LayoutParams(dp(48), dp(48)))
             list.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -403,9 +401,9 @@ class ControlScreen(context: Context) : FrameLayout(context) {
     private fun confirmDeleteDevice(device: DeviceInfo) {
         deleteDialog = AlertDialog.Builder(context)
             .setTitle(R.string.control_delete_device_title)
-            .setMessage(context.getString(R.string.control_delete_device_confirm, device.name.ifBlank { device.key }))
+            .setMessage(context.getString(R.string.control_delete_device_confirm, device.name.ifBlank { device.deviceId }))
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.control_delete_device) { _, _ -> revokeDevice?.invoke(device.key) }
+            .setPositiveButton(R.string.control_delete_device) { _, _ -> revokeDevice?.invoke(device.deviceId) }
             .show()
     }
 
@@ -420,7 +418,7 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         content.addView(input)
         content.addView(primaryButton(context.getString(R.string.control_rename_device)) {
             dialog.dismiss()
-            rename(device.key, input.text.toString())
+            rename(device.deviceId, input.text.toString())
         })
         dialog.setContentView(content)
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))

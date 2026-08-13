@@ -100,7 +100,7 @@ def test_concurrent_relation_updates_do_not_resurrect_revoked_device(tmp_path, m
     store = DeviceStore(tmp_path / "devices.json")
     key_a = store.add_device("A")
     key_b = store.add_device("B")
-    devices = {row["name"]: row["key"] for row in store.list_devices()}
+    devices = {row["name"]: row["device_id"] for row in store.list_devices()}
     device_a = devices["A"]
     device_b = devices["B"]
 
@@ -149,7 +149,8 @@ def test_concurrent_relation_updates_do_not_resurrect_revoked_device(tmp_path, m
 def test_concurrent_touch_cannot_restore_a_revoked_credential(tmp_path, monkeypatch) -> None:
     store = DeviceStore(tmp_path / "devices.json")
     key = store.add_device("Phone")
-
+    device_id = store.device_id_for_key(key)
+    assert device_id is not None
     original_replace = device_store_module.os.replace
     touch_replace_entered = threading.Event()
     release_touch_replace = threading.Event()
@@ -169,7 +170,7 @@ def test_concurrent_touch_cannot_restore_a_revoked_credential(tmp_path, monkeypa
 
     monkeypatch.setattr(device_store_module.os, "replace", replace)
     touch = threading.Thread(target=store.touch, args=(key,))
-    revoke = threading.Thread(target=store.remove_device, args=(key,))
+    revoke = threading.Thread(target=store.remove_device, args=(device_id,))
     touch.start()
     assert touch_replace_entered.wait(timeout=1)
     revoke.start()

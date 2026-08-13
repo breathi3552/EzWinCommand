@@ -6,7 +6,6 @@ import asyncio
 from collections import deque
 from dataclasses import asdict
 import json
-import hashlib
 from typing import Any, AsyncIterator
 
 from agent.protocol import PROTOCOL_VERSION
@@ -433,17 +432,18 @@ async def local_events(request: Request):
 
 @router.get("/api/devices")
 async def list_devices(request: Request):
-    """列出已配对设备；鉴权中间件仅允许本机无凭据访问。"""
-    return {"devices": _get_auth_manager(request).list_devices()}
+    """列出已配对设备，并标记当前鉴权设备。"""
+    current_device_id = request.scope.get("state", {}).get("device_id")
+    return {"devices": _get_auth_manager(request).list_devices(current_device_id)}
 
 
-@router.delete("/api/devices/{device_key}")
-async def revoke_device(device_key: str, request: Request):
-    """撤销指定设备授权；成功后立即终止该设备的活动媒体流。"""
-    success = _get_auth_manager(request).remove_device(device_key)
-    if success:
-        request.app.state.media_event_hub.revoke(hashlib.sha256(device_key.encode()).hexdigest())
-    return {"success": success}
+@router.delete("/api/devices/{device_id}")
+async def revoke_device(device_id: str, request: Request):
+    """按 device_id 撤销指定设备授权。"""
+    success = _get_auth_manager(request).remove_device(device_id)
+    if not success:
+        return JSONResponse(status_code=404, content={"detail": "设备不存在"})
+    return {"success": True}
 
 
 class _RenameBody(BaseModel):
@@ -452,8 +452,10 @@ class _RenameBody(BaseModel):
     name: str
 
 
-@router.patch("/api/devices/{device_key}")
-async def rename_device(device_key: str, body: _RenameBody, request: Request):
-    """重命名已配对设备。"""
-    success = _get_auth_manager(request).rename_device(device_key, body.name)
-    return {"success": success}
+@router.patch("/api/devices/{device_id}")
+async def rename_device(device_id: str, body: _RenameBody, request: Request):
+    """按 device_id 重命名已配对设备。"""
+    success = _get_auth_manager(request).rename_device(device_id, body.name)
+    if not success:
+        return JSONResponse(status_code=404, content={"detail": "设备不存在"})
+    return {"success": True}

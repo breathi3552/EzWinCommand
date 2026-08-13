@@ -30,7 +30,6 @@ sealed interface ControlUiState {
     data class Ready(
         val actions: List<ActionPlugin>,
         val devices: List<DeviceInfo>,
-        val currentDeviceKey: String? = null,
         val media: MediaState = MediaState.LOADING,
         val mediaLoading: Boolean = true,
         val artwork: ByteArray? = null,
@@ -68,4 +67,29 @@ sealed interface AndroidUiEffect {
     data class ShowMessage(val message: String) : AndroidUiEffect
     data class OpenControl(val serverId: String, val baseUrl: String) : AndroidUiEffect
     data object ReturnToMain : AndroidUiEffect
+}
+
+internal sealed interface DeviceRevokeTransition {
+    data object Failed : DeviceRevokeTransition
+    data object CleanupFailed : DeviceRevokeTransition
+    data object ReturnedToPairing : DeviceRevokeTransition
+    data class Refreshed(val state: ControlUiState) : DeviceRevokeTransition
+}
+
+internal suspend fun applyDeviceRevoke(
+    deviceId: String,
+    devices: List<DeviceInfo>,
+    revoke: suspend (String) -> Boolean,
+    onSelfRevoked: suspend () -> Boolean,
+    refresh: suspend () -> ControlUiState,
+): DeviceRevokeTransition {
+    if (!revoke(deviceId)) return DeviceRevokeTransition.Failed
+    if (devices.firstOrNull { it.deviceId == deviceId }?.isCurrent == true) {
+        return if (onSelfRevoked()) {
+            DeviceRevokeTransition.ReturnedToPairing
+        } else {
+            DeviceRevokeTransition.CleanupFailed
+        }
+    }
+    return DeviceRevokeTransition.Refreshed(refresh())
 }

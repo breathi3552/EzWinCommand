@@ -43,9 +43,14 @@ class AuthManager:
         self._pairings: dict[str, dict] = {}
         self._pairings_lock = RLock()
         self._change_listener: Callable[[frozenset[str]], None] | None = None
+        self._revoke_listener: Callable[[str], None] | None = None
 
     def set_change_listener(self, listener: Callable[[frozenset[str]], None] | None) -> None:
         self._change_listener = listener
+
+    def set_revoke_listener(self, listener: Callable[[str], None] | None) -> None:
+        """设置设备撤销后的非敏感活动状态失效回调。"""
+        self._revoke_listener = listener
 
     def _notify(self, *domains: str) -> None:
         if self._change_listener is not None:
@@ -139,24 +144,34 @@ class AuthManager:
             self._store.touch(key)
         return ok
 
+    def device_id_for_key(self, key: str) -> str | None:
+        """返回鉴权请求对应的稳定设备标识。"""
+        return self._store.device_id_for_key(key)
+
+
     def touch(self, key: str) -> None:
         self._store.touch(key)
 
-
-    def list_devices(self) -> list[dict]:
-        return self._store.list_devices()
+    def list_devices(self, current_device_id: str | None = None) -> list[dict]:
+        return self._store.list_devices(current_device_id)
 
     def has_devices(self) -> bool:
         return self._store.has_any_device()
 
-    def remove_device(self, key: str) -> bool:
-        changed = self._store.remove_device(key)
+    def remove_device(self, device_id: str) -> bool:
+        device_key = self._store.key_for_device_id(device_id)
+        changed = self._store.remove_device(device_id)
         if changed:
+            if device_key is not None and self._revoke_listener is not None:
+                try:
+                    self._revoke_listener(hashlib.sha256(device_key.encode()).hexdigest())
+                except Exception:
+                    logger.exception("设备撤销后的活动流失效失败")
             self._notify("devices")
         return changed
 
-    def rename_device(self, key: str, name: str) -> bool:
-        changed = self._store.rename_device(key, name)
+    def rename_device(self, device_id: str, name: str) -> bool:
+        changed = self._store.rename_device(device_id, name)
         if changed:
             self._notify("devices")
         return changed
@@ -189,14 +204,19 @@ def create_auth_middleware(auth_manager: AuthManager):
             if _is_anonymous_request(method, path):
                 return await self._app(scope, receive, send)
             if local:
-                scope.setdefault("state", {})["device_digest"] = hashlib.sha256(b"ezwincommand:loopback").hexdigest()
+                state = scope.setdefault("state", {})
+                state["device_digest"] = hashlib.sha256(b"ezwincommand:loopback").hexdigest()
+                state["device_id"] = None
                 return await self._app(scope, receive, send)
             request = Request(scope, receive)
             header = request.headers.get("Authorization", "")
-            if not header.startswith("Bearer ") or not auth_manager.is_authorized(header[7:]):
+            key = header[7:] if header.startswith("Bearer ") else ""
+            if not key or not auth_manager.is_authorized(key):
                 response = JSONResponse(status_code=401, content={"detail": "未授权"})
                 return await response(scope, receive, send)
-            scope.setdefault("state", {})["device_digest"] = hashlib.sha256(header[7:].encode()).hexdigest()
+            state = scope.setdefault("state", {})
+            state["device_digest"] = hashlib.sha256(key.encode()).hexdigest()
+            state["device_id"] = auth_manager.device_id_for_key(key)
             await self._app(scope, receive, send)
 
     return _AuthMiddleware

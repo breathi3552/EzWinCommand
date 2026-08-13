@@ -1,5 +1,11 @@
 # EzWinCommand 变更日志
 
+## 2026-08-13
+
+### 变更
+
+- Server、Android 与 Web 的设备管理统一切换为稳定非敏感 `device_id`；设备列表仅返回名称、创建时间、最后活动时间、`is_current` 和 `device_id`，localhost 不标记当前设备，远端按鉴权请求标记。
+- localhost 与任一已配对设备均可按 `device_id` 重命名、撤销全部设备；不存在目标返回明确失败，Android 自撤销后清除会话并回到配对页，撤销其他设备后重新读取权威列表。
 ## 2026-08-09
 
 ### 变更

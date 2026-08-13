@@ -14,7 +14,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class ControlController(
     internal val apiClient: EzApiClient,
-    private val currentDeviceKeyProvider: () -> String? = { null },
     private val onAuthInvalid: () -> Unit,
     private val pendingStore: PendingCommandStore? = null,
 ) : Closeable {
@@ -33,7 +32,6 @@ class ControlController(
             a is ApiResult.Success && d is ApiResult.Success -> ControlUiState.Ready(
                 actions = a.value,
                 devices = d.value,
-                currentDeviceKey = currentDeviceKeyProvider()?.trim()?.takeIf { it.isNotEmpty() },
                 media = authoritativeMedia ?: io.github.ezwincommand.android.model.MediaState.LOADING,
                 mediaLoading = authoritativeMedia == null,
             )
@@ -127,7 +125,7 @@ class ControlController(
         cancelTracking()
         apiClient.close()
     }
-    suspend fun revokeDevice(deviceKey: String): Boolean = when (val result = apiClient.revokeDevice(deviceKey)) {
+    suspend fun revokeDevice(deviceId: String): Boolean = when (val result = apiClient.revokeDevice(deviceId)) {
         is ApiResult.Success -> result.value
         is ApiResult.HttpError -> {
             if (result.status == 401 || result.status == 403) onAuthInvalid()
@@ -136,11 +134,11 @@ class ControlController(
         else -> false
     }
 
-    suspend fun renameDevice(deviceKey: String, name: String): Boolean =
+    suspend fun renameDevice(deviceId: String, name: String): Boolean =
         if (name.trim().isEmpty()) {
             false
         } else {
-            when (val result = apiClient.renameDevice(deviceKey, name.trim())) {
+            when (val result = apiClient.renameDevice(deviceId, name.trim())) {
                 is ApiResult.Success -> result.value
                 is ApiResult.HttpError -> {
                     if (result.status == 401 || result.status == 403) onAuthInvalid()
