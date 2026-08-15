@@ -52,6 +52,7 @@
     <string name="main_port_default">8080</string>
     <string name="main_unknown_error">未知错误</string>
     <string name="main_back_to_pairing">返回配对页</string>
+    <string name="main_returned_to_pairing">已返回配对页。</string>
     <string name="control_loading">加载中…</string>
     <string name="control_empty_state">暂无插件</string>
     <string name="control_no_actions">暂无插件</string>

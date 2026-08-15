@@ -72,7 +72,10 @@ class ConnectionRepository(
                     return ConnectionCheckResult.Incompatible(protocolMessage())
                 }
                 if (authorized is ApiResult.HttpError && (authorized.status == 401 || authorized.status == 403)) {
-                    sessions.markRepair(identity.serverId)
+                    when (val resolution = resolveAuthorizationFailure(identity.serverId, normalized)) {
+                        is AuthorizationFailureResolution.ConfirmedInvalid -> Unit
+                        else -> return resolution.toConnectionCheckResult()
+                    }
                 }
             }
         }
@@ -157,8 +160,10 @@ class ConnectionRepository(
             is ApiResult.HttpError -> {
                 if (result.status == 426) {
                     RestoreResult.InvalidSavedSession(target.serverId, protocolMessage())
+                } else if (result.status == 401 || result.status == 403) {
+                    val resolution = resolveAuthorizationFailure(target.serverId, target.baseUrl)
+                    RestoreResult.InvalidSavedSession(target.serverId, resolution.message)
                 } else {
-                    if (result.status == 401 || result.status == 403) sessions.markRepair(target.serverId)
                     RestoreResult.InvalidSavedSession(target.serverId, sessionMessage(result.status, result.message))
                 }
             }
@@ -179,6 +184,50 @@ class ConnectionRepository(
             else -> return false
         }
         return sessions.migrateLegacy(identity.serverId, normalized, legacy.third, legacy.second) != null
+    }
+
+    suspend fun resolveAuthorizationFailure(
+        serverId: String,
+        baseUrl: String,
+    ): AuthorizationFailureResolution {
+        val normalized = normalizeBaseUrl(baseUrl)
+            ?: return AuthorizationFailureResolution.IdentityUnreachable(lastNormalizeError)
+        val identity = when (val result = clientFactory(normalized) { null }.identity()) {
+            is ApiResult.Success -> {
+                if (!isCompatible(result.value)) {
+                    return AuthorizationFailureResolution.Incompatible(protocolMessage())
+                }
+                result.value
+            }
+            is ApiResult.HttpError -> {
+                if (result.status == 426) {
+                    return AuthorizationFailureResolution.Incompatible(protocolMessage())
+                }
+                return AuthorizationFailureResolution.IdentityUnreachable("服务器身份无法确认。")
+            }
+            is ApiResult.NetworkError -> {
+                return AuthorizationFailureResolution.IdentityUnreachable(
+                    networkMessage(normalized, result.message, result.cause),
+                )
+            }
+            is ApiResult.ParseError -> {
+                if (result.isProtocolMismatch()) {
+                    return AuthorizationFailureResolution.Incompatible(protocolMessage())
+                }
+                return AuthorizationFailureResolution.IdentityUnreachable("服务器身份无法识别。")
+            }
+        }
+        if (identity.serverId != serverId) {
+            return AuthorizationFailureResolution.DifferentServer("服务器身份已变化，请重新选择服务。")
+        }
+        if (sessions.get(serverId) == null) {
+            return AuthorizationFailureResolution.ConfirmedInvalid("授权已失效，请重新配对。")
+        }
+        return if (sessions.remove(serverId)) {
+            AuthorizationFailureResolution.ConfirmedInvalid("授权已失效，请重新配对。")
+        } else {
+            AuthorizationFailureResolution.CleanupFailed("会话失效，但本地会话清理失败。")
+        }
     }
 
     fun invalidate(serverId: String) {
@@ -253,9 +302,17 @@ class ConnectionRepository(
     private fun sessionMessage(status: Int, message: String) =
         if (status == 401 || status == 403) "会话已失效，请重新配对。" else message.ifBlank { "无法恢复会话。" }
 
-    private fun networkMessage(@Suppress("UNUSED_PARAMETER") baseUrl: String, message: String, cause: Throwable?): String {
-        val detail = message.ifBlank { cause?.message.orEmpty() }
-        return if (detail.isBlank()) "无法连接，请确认手机与电脑在同一局域网。" else "无法连接：$detail"
+    private fun networkMessage(@Suppress("UNUSED_PARAMETER") baseUrl: String, @Suppress("UNUSED_PARAMETER") message: String, @Suppress("UNUSED_PARAMETER") cause: Throwable?): String {
+        return "无法连接，请确认手机与电脑在同一局域网。"
+    }
+
+
+    private fun AuthorizationFailureResolution.toConnectionCheckResult(): ConnectionCheckResult = when (this) {
+        is AuthorizationFailureResolution.ConfirmedInvalid -> ConnectionCheckResult.Unreachable(message)
+        is AuthorizationFailureResolution.DifferentServer -> ConnectionCheckResult.Unreachable(message)
+        is AuthorizationFailureResolution.IdentityUnreachable -> ConnectionCheckResult.Unreachable(message)
+        is AuthorizationFailureResolution.Incompatible -> ConnectionCheckResult.Incompatible(message)
+        is AuthorizationFailureResolution.CleanupFailed -> ConnectionCheckResult.Unreachable(message)
     }
 
     private companion object {

@@ -220,6 +220,83 @@ class ConnectionRepositoryCancellationTest {
         assertEquals("credential-for-test-only", store.readDeviceKey(SERVER_A))
     }
 
+    @Test
+    fun `same server identity confirms invalid credential and removes whole server record`() = runTest {
+        val store = store("auth-failure-same-server")
+        store.saveSession(SERVER_A, BASE_URL_A, "Phone", "fixture-key", 100)
+        var identityCalls = 0
+        val api = object : EzApiClient(BASE_URL_A, { null }) {
+            override suspend fun identity(): ApiResult<ServerIdentity> {
+                identityCalls++
+                return ApiResult.Success(ServerIdentity(2, SERVER_A, "PC A"))
+            }
+
+            override suspend fun listActions(): ApiResult<List<io.github.ezwincommand.android.model.ActionPlugin>> =
+                ApiResult.HttpError(401, "未授权")
+        }
+        val repository = ConnectionRepository(store, clientFactory = { _, _ -> api })
+
+        val result = repository.restoreSession()
+
+        assertTrue(result is RestoreResult.InvalidSavedSession)
+        assertEquals(2, identityCalls)
+        assertEquals(null, store.get(SERVER_A))
+        assertEquals(null, store.readDeviceKey(SERVER_A))
+    }
+
+    @Test
+    fun `different server identity preserves saved record after authorization failure`() = runTest {
+        val store = store("auth-failure-different-server")
+        store.saveSession(SERVER_A, BASE_URL_A, "Phone", "fixture-key", 100)
+        var identityCalls = 0
+        val api = object : EzApiClient(BASE_URL_A, { null }) {
+            override suspend fun identity(): ApiResult<ServerIdentity> {
+                identityCalls++
+                val server = if (identityCalls == 1) SERVER_A else SERVER_B
+                return ApiResult.Success(ServerIdentity(2, server, "PC"))
+            }
+
+            override suspend fun listActions(): ApiResult<List<io.github.ezwincommand.android.model.ActionPlugin>> =
+                ApiResult.HttpError(401, "未授权")
+        }
+        val repository = ConnectionRepository(store, clientFactory = { _, _ -> api })
+
+        val result = repository.restoreSession()
+
+        assertTrue(result is RestoreResult.InvalidSavedSession)
+        assertTrue((result as RestoreResult.InvalidSavedSession).message.contains("身份"))
+        assertEquals(2, identityCalls)
+        assertEquals("fixture-key", store.readDeviceKey(SERVER_A))
+    }
+
+    @Test
+    fun `unreachable server identity preserves saved record after authorization failure`() = runTest {
+        val store = store("auth-failure-unreachable")
+        store.saveSession(SERVER_A, BASE_URL_A, "Phone", "fixture-key", 100)
+        var identityCalls = 0
+        val api = object : EzApiClient(BASE_URL_A, { null }) {
+            override suspend fun identity(): ApiResult<ServerIdentity> {
+                identityCalls++
+                return if (identityCalls == 1) {
+                    ApiResult.Success(ServerIdentity(2, SERVER_A, "PC A"))
+                } else {
+                    ApiResult.NetworkError("网络不可达")
+                }
+            }
+
+            override suspend fun listActions(): ApiResult<List<io.github.ezwincommand.android.model.ActionPlugin>> =
+                ApiResult.HttpError(403, "未授权")
+        }
+        val repository = ConnectionRepository(store, clientFactory = { _, _ -> api })
+
+        val result = repository.restoreSession()
+
+        assertTrue(result is RestoreResult.InvalidSavedSession)
+        assertTrue((result as RestoreResult.InvalidSavedSession).message.contains("连接"))
+        assertEquals(2, identityCalls)
+        assertEquals("fixture-key", store.readDeviceKey(SERVER_A))
+    }
+
     private companion object {
         const val SERVER_A = "00000000-0000-4000-8000-000000000001"
         const val SERVER_B = "00000000-0000-4000-8000-000000000002"

@@ -63,10 +63,10 @@ data class MainDraft(
     val deviceName: String = "Android",
 )
 
+
 sealed interface AndroidUiEffect {
     data class ShowMessage(val message: String) : AndroidUiEffect
     data class OpenControl(val serverId: String, val baseUrl: String) : AndroidUiEffect
-    data object ReturnToMain : AndroidUiEffect
 }
 
 internal sealed interface DeviceRevokeTransition {

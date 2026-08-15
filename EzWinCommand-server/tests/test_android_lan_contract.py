@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -9,6 +8,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 from agent.device_store import DeviceStore
+from agent.invalidation import DeviceInvalidationHub, DeviceRevoked
 
 
 app_module = import_module("app")
@@ -115,7 +115,8 @@ class _StubAuthManager:
                 "last_seen": "2026-07-09T00:00:00Z",
             },
         ]
-        self._revoke_listener = None
+        self._change_listener = None
+        self._invalidation_listener = None
 
     def create_pairing(self, device_name="Android"):
         return {"pairing_id": "pair-1", "server_id": "server-1", "expires_in": 300}
@@ -167,16 +168,19 @@ class _StubAuthManager:
     def touch(self, key):
         return None
 
-    def set_revoke_listener(self, listener):
-        self._revoke_listener = listener
+    def set_change_listener(self, listener):
+        self._change_listener = listener
+
+    def set_invalidation_listener(self, listener):
+        self._invalidation_listener = listener
 
     def remove_device(self, device_id):
         if self.key_for_device_id(device_id) is None:
             return False
         self._devices = [device for device in self._devices if device["device_id"] != device_id]
         self.authorized_keys.discard(self._device_keys[device_id])
-        if self._revoke_listener is not None:
-            self._revoke_listener(hashlib.sha256(self._device_keys[device_id].encode()).hexdigest())
+        if self._invalidation_listener is not None:
+            self._invalidation_listener(DeviceRevoked(device_id))
         return True
 
 def _make_client(store=None) -> TestClient:
@@ -398,15 +402,13 @@ def test_device_list_requires_remote_bearer() -> None:
     assert unauthorized.status_code == 401
 
 
-def test_remote_device_revoke_removes_authorization() -> None:
+def test_remote_device_revoke_removes_authorization_and_publishes_device_fact() -> None:
     client = _make_client()
     key = "fixture-device-credential"
     auth_manager = client.app.state.auth_manager
     auth_manager.authorized_keys.add(key)
-    revoked: list[str] = []
-    hub = type("Hub", (), {"revoke": lambda _, digest: revoked.append(digest)})()
-    client.app.state.media_event_hub = hub
-    auth_manager.set_revoke_listener(hub.revoke)
+    invalidations: list[DeviceRevoked] = []
+    auth_manager.set_invalidation_listener(invalidations.append)
 
     response = _remote_request(
         client,
@@ -416,8 +418,8 @@ def test_remote_device_revoke_removes_authorization() -> None:
     )
     assert response.status_code == 200
     assert response.json() == {"success": True}
-    assert revoked == [hashlib.sha256(key.encode()).hexdigest()]
     assert not auth_manager.is_authorized(key)
+    assert invalidations == [DeviceRevoked("device-android")]
 
 
 def test_real_http_revoke_wires_to_media_event_hub(tmp_path) -> None:
@@ -427,7 +429,6 @@ def test_real_http_revoke_wires_to_media_event_hub(tmp_path) -> None:
     assert device_id is not None
 
     with TestClient(create_app(device_store=store)) as client:
-        digest = hashlib.sha256(key.encode()).hexdigest()
         response = _remote_request(
             client,
             "DELETE",
@@ -437,7 +438,7 @@ def test_real_http_revoke_wires_to_media_event_hub(tmp_path) -> None:
         assert response.status_code == 200
         assert response.json() == {"success": True}
         assert not store.is_authorized(key)
-        assert digest in client.app.state.media_event_hub.revoked_digests
+        assert client.app.state.media_event_hub.revoked_device_ids == {device_id}
 
 
 
@@ -772,13 +773,19 @@ def test_local_events_are_loopback_only_and_payload_is_non_sensitive() -> None:
     assert remote.status_code == 404
 
 
+
+
+
+
 def test_auth_manager_publishes_pairing_and_device_invalidations() -> None:
     from agent.auth import AuthManager
 
     store = _StubStore()
     manager = AuthManager(store, server_id="server-1")
     changes: list[frozenset[str]] = []
+    invalidations: list[DeviceRevoked] = []
     manager.set_change_listener(changes.append)
+    manager.set_invalidation_listener(invalidations.append)
 
     created = manager.create_pairing("Android Phone")
     code = manager.list_pairings(include_code=True)[0]["code"]
@@ -787,7 +794,23 @@ def test_auth_manager_publishes_pairing_and_device_invalidations() -> None:
 
     assert manager.rename_device("device-android", "New Name")
     assert manager.remove_device("device-android")
-    assert changes[-2:] == [frozenset({"devices"}), frozenset({"devices"})]
+    assert changes[-1:] == [frozenset({"devices"})]
+    assert invalidations == [DeviceRevoked("device-android")]
+
+def test_invalidation_hub_orders_media_termination_before_local_refetch() -> None:
+    events: list[tuple[str, object]] = []
+    hub = DeviceInvalidationHub(
+        lambda domains: events.append(("local", domains)),
+        lambda event: events.append(("media", event)),
+    )
+
+    hub.publish(DeviceRevoked("device-android"))
+
+    assert events == [
+        ("media", DeviceRevoked("device-android")),
+        ("local", frozenset({"devices"})),
+    ]
+    assert "fixture-device-credential" not in repr(events)
 
 
 def test_android_lan_command_accepts_valid_bearer() -> None:

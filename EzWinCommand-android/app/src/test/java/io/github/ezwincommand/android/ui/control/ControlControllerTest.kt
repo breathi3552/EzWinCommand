@@ -13,6 +13,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -103,6 +104,55 @@ class ControlControllerTest {
         val state = controller.load()
         assertTrue(state is ControlUiState.Error)
         assertEquals(1, authInvalidCount)
+    }
+    @Test
+    fun `authorization invalidation suppresses an in-flight command result`() = runBlocking {
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<ApiResult<CommandResult>>()
+        val client = object : EzApiClient("http://192.168.1.10:8080", deviceKeyProvider = { "k" }) {
+            override suspend fun executeCommand(
+                action: String,
+                params: Map<String, Any?>,
+            ): ApiResult<CommandResult> {
+                started.complete(Unit)
+                return kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { release.await() }
+            }
+        }
+        val controller = ControlController(client, onAuthInvalid = {})
+        val request = async { controller.sendAction(ActionCommand("power")) }
+
+        started.await()
+        controller.invalidateAuthorization()
+        release.complete(ApiResult.Success(CommandResult(true, "已受理", emptyMap())))
+
+        val result = request.await()
+        assertFalse(result.success)
+        assertEquals("授权已失效，请重新配对。", result.message)
+    }
+    @Test
+    fun `authorization invalidation drops an in-flight task poll`() = runBlocking {
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<ApiResult<io.github.ezwincommand.android.model.CommandStatus>>()
+        val client = object : EzApiClient("http://192.168.1.10:8080", deviceKeyProvider = { "k" }) {
+            override suspend fun getCommandStatus(commandId: String): ApiResult<io.github.ezwincommand.android.model.CommandStatus> {
+                started.complete(Unit)
+                return kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { release.await() }
+            }
+        }
+        val controller = ControlController(client, onAuthInvalid = {})
+        val poll = async {
+            controller.pollPending(ActionCommand("power"), "command-id", maxPolls = 1, pollDelayMs = 0)
+        }
+
+        started.await()
+        controller.invalidateAuthorization()
+        release.complete(
+            ApiResult.Success(
+                io.github.ezwincommand.android.model.CommandStatus("command-id", "succeeded", "done"),
+            ),
+        )
+
+        assertNull(poll.await())
     }
     @Test
     fun `revoke device uses stable device id`() = runBlocking {

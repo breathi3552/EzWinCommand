@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agent.api import router
+from agent.auth import AuthManager, create_auth_middleware
+from agent.device_store import DeviceStore
 from agent.command_tasks import CommandTaskStore, AsyncCommandService
 from plugins.base import CommandResult
 
@@ -104,6 +106,69 @@ def test_loopback_post_then_get_and_cross_owner_404(tmp_path):
         # loopback identity is server-derived; client owner headers do not affect visibility
         assert client.send(request).status_code == 200
     app.state.async_command_service.executor.shutdown(wait=True)
+
+def test_running_command_continues_after_owner_revoke_but_polling_stops(tmp_path):
+    started = threading.Event()
+    finish = threading.Event()
+    finished = threading.Event()
+
+    class Slow:
+        def execute(self, action, params):
+            started.set()
+            assert finish.wait(2)
+            finished.set()
+            return CommandResult(True, "done", {})
+
+    store = DeviceStore(tmp_path / "devices.json")
+    owner_key = store.add_device("Phone")
+    other_key = store.add_device("Tablet")
+    owner_id = store.device_id_for_key(owner_key)
+    assert owner_id is not None
+    auth_manager = AuthManager(store, server_id="server")
+    service = AsyncCommandService(Slow(), CommandTaskStore(tmp_path / "tasks.json"))
+    app = FastAPI()
+    app.include_router(router)
+    app.state.dispatcher = Slow()
+    app.state.async_command_service = service
+    app.state.auth_manager = auth_manager
+    app.add_middleware(create_auth_middleware(auth_manager))
+
+    def remote(client, method, path, key, **kwargs):
+        transport = client._transport
+        old_client = transport.client
+        transport.client = ("192.168.1.10", 54321)
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers.setdefault("Authorization", f"Bearer {key}")
+        headers.setdefault("X-EzWinCommand-Protocol", "2")
+        kwargs["headers"] = headers
+        try:
+            return client.request(method, path, **kwargs)
+        finally:
+            transport.client = old_client
+
+    try:
+        with TestClient(app) as client:
+            accepted = remote(
+                client,
+                "POST",
+                "/api/command",
+                owner_key,
+                json={"action": "esports_mode", "params": {"sub_action": "enter"}},
+            )
+            assert accepted.status_code == 202
+            command_id = accepted.json()["command_id"]
+            assert started.wait(1)
+
+            revoked = remote(client, "DELETE", f"/api/devices/{owner_id}", owner_key)
+            assert revoked.status_code == 200
+            assert remote(client, "GET", f"/api/commands/{command_id}", owner_key).status_code == 401
+            assert remote(client, "GET", f"/api/commands/{command_id}", other_key).status_code == 404
+
+            finish.set()
+            assert finished.wait(1)
+    finally:
+        finish.set()
+        service.executor.shutdown(wait=True)
 
 def test_esports_metadata_dict_ids_accept_enter_exit_and_reject_unknown(tmp_path):
     from pathlib import Path

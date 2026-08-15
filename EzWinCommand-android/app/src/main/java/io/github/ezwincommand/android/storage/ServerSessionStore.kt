@@ -73,6 +73,7 @@ class ServerSessionStore(
     }
 
     fun remove(serverId: String): Boolean {
+        if (get(serverId) == null) return false
         val records = load().filterNot { it.serverId == serverId }
         val committed = commitRecords(records, validRawRecords() - serverId)
         if (committed) reclaimOrphanAliases()

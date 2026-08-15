@@ -60,4 +60,35 @@ class MediaVolumeActorTest {
         assertEquals("失败", observedError)
         assertEquals(0, idleCalls)
     }
+    @Test
+    fun `close drops result from an in-flight volume request`() = runTest {
+        val gate = CompletableDeferred<CommandResult>()
+        var confirmedCalls = 0
+        var failureCalls = 0
+        var idleCalls = 0
+        var localCalls = 0
+        val actor = MediaVolumeActor(
+            scope = this,
+            execute = {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gate.await() }
+            },
+            onLocalValue = { localCalls++ },
+            onConfirmed = { confirmedCalls++ },
+            onFailure = { _, _ -> failureCalls++ },
+            onIdle = { idleCalls++ },
+            nowMillis = { testScheduler.currentTime },
+        )
+
+        actor.submitVolume(80)
+        testScheduler.runCurrent()
+        actor.close()
+        actor.updateConfirmed(81)
+        gate.complete(CommandResult(false, "授权已失效", emptyMap()))
+        advanceUntilIdle()
+
+        assertEquals(0, confirmedCalls)
+        assertEquals(0, failureCalls)
+        assertEquals(0, idleCalls)
+        assertEquals(1, localCalls)
+    }
 }

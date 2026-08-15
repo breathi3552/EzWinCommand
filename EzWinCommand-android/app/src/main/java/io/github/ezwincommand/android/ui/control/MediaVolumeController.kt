@@ -22,10 +22,12 @@ class MediaVolumeActor(
     private var lastStartedAt = Long.MIN_VALUE
     private var lastSuccessful: Int? = null
     private var confirmedValue: Int = 0
+    @Volatile
     private var closed = false
 
     fun updateConfirmed(value: Int) {
         require(value in 0..100)
+        if (closed) return
         confirmedValue = value
         if (job?.isActive != true && pending == null) onLocalValue(value)
     }
@@ -74,6 +76,7 @@ class MediaVolumeActor(
                 }
                 lastStartedAt = nowMillis()
                 val result = execute(value)
+                if (closed) break
                 if (!result.success) {
                     pending = null
                     gestureFinal = null

@@ -13,6 +13,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeout
 
 class EzApiClientTest {
     private class JsonConnection(private val body: String) : HttpURLConnection(URL("http://192.168.1.10:8080/test")) {
@@ -23,6 +25,14 @@ class EzApiClientTest {
         }
 
         override fun getRequestProperty(key: String): String? = requestProperties[key]
+        override fun getResponseCode(): Int = 200
+        override fun getInputStream(): InputStream = ByteArrayInputStream(body.toByteArray())
+        override fun getOutputStream() = ByteArrayOutputStream()
+        override fun disconnect() = Unit
+        override fun usingProxy() = false
+        override fun connect() = Unit
+    }
+    private class SseConnection(private val body: String) : HttpURLConnection(URL("http://127.0.0.1:8080/events")) {
         override fun getResponseCode(): Int = 200
         override fun getInputStream(): InputStream = ByteArrayInputStream(body.toByteArray())
         override fun getOutputStream() = ByteArrayOutputStream()
@@ -138,6 +148,24 @@ class EzApiClientTest {
         val result = client.completePairing("server-1", "pair-1", "1234")
 
         assertEquals(ApiResult.HttpError(401, "未授权"), result)
+        client.close()
+    }
+
+    @Test
+    fun `media SSE authorization revocation is surfaced as terminal termination`() = runBlocking {
+        val termination = CompletableDeferred<MediaEventTermination>()
+        val connection = SseConnection("event: authorization_revoked\ndata: {}\n\n")
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "credential-for-test-only" }) {
+            override fun openConnection(path: String): HttpURLConnection = connection
+        }
+
+        val handle = client.openMediaEvents(0, {}, { termination.complete(it) })
+
+        assertEquals(
+            MediaEventTermination.AuthorizationRevoked,
+            withTimeout(1_000) { termination.await() },
+        )
+        handle.close()
         client.close()
     }
 

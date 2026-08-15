@@ -15,6 +15,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app import create_app
+from agent.device_store import DeviceStore
+from agent.invalidation import DeviceRevoked
 from media.service import AudioEndpoint, MediaService, MediaState, _AudioReading, _MediaReading
 from plugins.base import CommandResult
 
@@ -137,6 +139,21 @@ def _run_uvicorn(
         yield live_server
     finally:
         live_server.stop()
+
+def _read_sse_event(response: http.client.HTTPResponse) -> tuple[str, dict]:
+    lines = []
+    while True:
+        raw = response.readline()
+        if not raw:
+            raise AssertionError("SSE 流在事件前结束")
+        line = raw.decode("utf-8").rstrip("\r\n")
+        lines.append(line)
+        if line == "":
+            break
+    event = next((line.removeprefix("event: ") for line in lines if line.startswith("event: ")), "")
+    data = next((line.removeprefix("data: ") for line in lines if line.startswith("data: ")), "{}")
+    return event, json.loads(data)
+
 
 def test_hanging_media_service_lifespan_ping() -> None:
     import threading
@@ -526,14 +543,19 @@ def test_revoke_stops_only_matching_subscriber_and_blocks_future_states() -> Non
 
         async def scenario():
             current = service.snapshot().revision
-            revoked = hub.stream(current, "digest-a")
-            other = hub.stream(current, "digest-b")
+            revoked = hub.stream(current, "device-a")
+            other = hub.stream(current, "device-b")
             revoked_task = asyncio.create_task(anext(revoked))
             other_task = asyncio.create_task(anext(other))
             await asyncio.sleep(0)
-            hub.revoke("digest-a")
+            hub.revoke(DeviceRevoked("device-a"))
+            revoked_frame = await revoked_task
+            assert revoked_frame == "event: authorization_revoked\ndata: {}\n\n"
+            late = hub.stream(current, "device-a")
+            assert await anext(late) == "event: authorization_revoked\ndata: {}\n\n"
+            await late.aclose()
             try:
-                await revoked_task
+                await anext(revoked)
             except StopAsyncIteration:
                 pass
             else:
@@ -548,3 +570,83 @@ def test_revoke_stops_only_matching_subscriber_and_blocks_future_states() -> Non
         frame = asyncio.run(scenario())
         assert '"volume":74' in frame
         assert hub.subscribers == {}
+
+
+def test_public_revoke_terminates_only_target_sse(tmp_path) -> None:
+    service = FakeMediaService()
+    store = DeviceStore(tmp_path / "devices.json")
+    key_a = store.add_device("Android A")
+    key_b = store.add_device("Android B")
+    device_a = store.device_id_for_key(key_a)
+    assert device_a is not None
+
+    application = create_app(service, device_store=store)
+    application.state.discovery_publisher.start = lambda: None
+    application.state.discovery_publisher.close = lambda: None
+    remote_headers = {
+        "X-Forwarded-For": "192.168.1.10",
+        "X-EzWinCommand-Protocol": "2",
+    }
+
+
+    with _run_uvicorn(application) as live_server:
+        headers_b = {**remote_headers, "Authorization": f"Bearer {key_b}"}
+        status, body = live_server.request("GET", "/api/devices", headers=headers_b)
+        assert status == 200
+        devices = json.loads(body)["devices"]
+        assert next(device for device in devices if device["device_id"] == store.device_id_for_key(key_b))["is_current"]
+
+        current = service.snapshot().revision
+        headers_a = {**remote_headers, "Authorization": f"Bearer {key_a}", "Accept": "text/event-stream"}
+        stream_a = live_server.open_connection()
+        stream_a.request("GET", f"/api/media/events?since={current}", headers=headers_a)
+        response_a = stream_a.getresponse()
+        assert response_a.status == 200
+
+        stream_b = live_server.open_connection()
+        stream_b.request("GET", f"/api/media/events?since={current}", headers={**headers_b, "Accept": "text/event-stream"})
+        response_b = stream_b.getresponse()
+        assert response_b.status == 200
+
+        status, body = live_server.request("DELETE", f"/api/devices/{device_a}", headers=headers_b)
+        assert status == 200
+        assert json.loads(body) == {"success": True}
+        assert _read_sse_event(response_a) == ("authorization_revoked", {})
+        service._publish(replace(service.snapshot(), volume=74))
+        event, payload = _read_sse_event(response_b)
+        assert event == "media"
+        assert payload["revision"] == current + 1
+        assert payload["volume"] == 74
+        response_a.close()
+        response_b.close()
+        stream_a.close()
+        stream_b.close()
+
+
+def test_public_local_revoke_publishes_refetch_event(tmp_path) -> None:
+    service = FakeMediaService()
+    store = DeviceStore(tmp_path / "devices.json")
+    key = store.add_device("Android")
+    device_id = store.device_id_for_key(key)
+    assert device_id is not None
+
+    application = create_app(service, device_store=store)
+    application.state.discovery_publisher.start = lambda: None
+    application.state.discovery_publisher.close = lambda: None
+
+    with _run_uvicorn(application) as live_server:
+        stream = live_server.open_connection()
+        stream.request("GET", "/api/local/events", headers={"Accept": "text/event-stream"})
+        response = stream.getresponse()
+        assert response.status == 200
+
+        status, body = live_server.request(
+            "DELETE",
+            f"/api/devices/{device_id}",
+            headers={"X-EzWinCommand-Protocol": "2"},
+        )
+        assert status == 200
+        assert json.loads(body) == {"success": True}
+        assert _read_sse_event(response) == ("changed", {"domains": ["devices"]})
+        response.close()
+        stream.close()

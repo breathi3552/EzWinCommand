@@ -154,6 +154,16 @@ class ControlScreen(context: Context) : FrameLayout(context) {
         renameDevice = onRenameDevice
         backToPairing = onBackToPairing
         refreshMedia = onMediaRefresh
+        val management = findViewById<View>(R.id.control_device_management)
+        val terminalAuthorizationError = state is ControlUiState.Error && state.authInvalid
+        management.visibility = if (terminalAuthorizationError) View.GONE else View.VISIBLE
+        management.isEnabled = !terminalAuthorizationError
+        if (terminalAuthorizationError) {
+            devicesPopup?.dismiss()
+            devicesPopup = null
+            deleteDialog?.dismiss()
+            deleteDialog = null
+        }
         when (state) {
             ControlUiState.Loading -> renderActions(listOf(ActionPlugin("media", context.getString(R.string.media_title), "", "", emptyList())), state, onAction, onBackToPairing, onMediaIntent)
             is ControlUiState.Error -> { actionsContainer.removeAllViews(); actionsContainer.addView(emptyView(state.message)) }

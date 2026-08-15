@@ -156,6 +156,55 @@ class MediaConnectionControllerTest {
     }
 
     @Test
+    fun `authorization invalidation stops reconnect and drops late media callbacks`() = runTest {
+        var snapshotCalls = 0
+        var authCalls = 0
+        var eventCallback: ((MediaState) -> Unit)? = null
+        var closedCallback: ((MediaEventTermination) -> Unit)? = null
+        val applied = mutableListOf<Long>()
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val client = object : EzApiClient("http://127.0.0.1:8080", { "test-device" }) {
+            override suspend fun getMediaState(): ApiResult<MediaState> {
+                snapshotCalls++
+                return ApiResult.Success(MediaState.LOADING.copy(revision = 1))
+            }
+
+            override fun openMediaEvents(
+                since: Long,
+                onEvent: (MediaState) -> Unit,
+                onClosed: (MediaEventTermination) -> Unit,
+                onOpen: () -> Unit,
+            ): Closeable {
+                eventCallback = onEvent
+                closedCallback = onClosed
+                return Closeable { }
+            }
+        }
+        val controller = MediaConnectionController(
+            client,
+            "http://127.0.0.1:8080",
+            this,
+            dispatcher,
+            onState = { applied += it.revision },
+            onArtwork = { _, _ -> },
+            onError = {},
+            onAuthInvalid = { authCalls++ },
+        )
+
+        controller.start("owner")
+        runCurrent()
+        assertEquals(listOf(1L), applied)
+        closedCallback!!(MediaEventTermination.AuthorizationRevoked)
+        runCurrent()
+        eventCallback!!(MediaState.LOADING.copy(revision = 2))
+        runCurrent()
+
+        assertEquals(1, authCalls)
+        assertEquals(1, snapshotCalls)
+        assertEquals(listOf(1L), applied)
+    }
+
+    @Test
     fun `ignores provisional revision zero until an authoritative snapshot arrives`() = runTest {
         val applied = mutableListOf<Long>()
         var eventCallback: ((MediaState) -> Unit)? = null

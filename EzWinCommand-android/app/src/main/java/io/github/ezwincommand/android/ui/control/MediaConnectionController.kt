@@ -84,7 +84,7 @@ class MediaConnectionController(
                 is ApiResult.Success -> snapshot.value
                 is ApiResult.HttpError -> {
                     if (snapshot.status == 401 || snapshot.status == 403) {
-                        onMain(generation, owner) { onAuthInvalid() }
+                        onMain(generation, owner) { terminateAuthorization() }
                         return
                     }
                     if (snapshot.status in 400..499) {
@@ -157,9 +157,13 @@ class MediaConnectionController(
             eventConnection = null
             when (reason) {
                 MediaEventTermination.ClosedByCaller -> return
+                MediaEventTermination.AuthorizationRevoked -> {
+                    onMain(generation, owner) { terminateAuthorization() }
+                    return
+                }
                 is MediaEventTermination.HttpError -> when {
                     reason.status == 401 || reason.status == 403 -> {
-                        onMain(generation, owner) { onAuthInvalid() }
+                        onMain(generation, owner) { terminateAuthorization() }
                         return
                     }
                     reason.status in 400..499 -> {
@@ -183,7 +187,7 @@ class MediaConnectionController(
                 RefreshOutcome.Applied
             }
             is ApiResult.HttpError -> if (refreshed.status == 401 || refreshed.status == 403) {
-                onMain(generation, owner) { onAuthInvalid() }
+                onMain(generation, owner) { terminateAuthorization() }
                 RefreshOutcome.AuthInvalid
             } else {
                 if (reportErrors) onMain(generation, owner) { onError(refreshed.message) }
@@ -232,7 +236,7 @@ class MediaConnectionController(
                         }
                         is ApiResult.HttpError -> {
                             if (result.status == 401 || result.status == 403) {
-                                onAuthInvalid()
+                                terminateAuthorization()
                                 true
                             } else result.status != 404
                         }
@@ -244,6 +248,11 @@ class MediaConnectionController(
                 artworkRetryDelay(backoffMillis(attempt))
             }
         }
+    }
+
+    private fun terminateAuthorization() {
+        invalidate()
+        onAuthInvalid()
     }
 
     private suspend fun onMain(generation: Long, owner: Any, block: () -> Unit) {

@@ -30,6 +30,28 @@ data: "cover":null,"volume":37,"render_devices":[],"capture_devices":[],"selecte
         assertEquals(listOf(7L), revisions)
         assertEquals(listOf(MediaEventTermination.Eof), reasons)
     }
+    @Test
+    fun `resets SSE event type after dispatch`() {
+        val body = """id: 1
+event: media
+data: {"revision":1,"available":true,"title":null,"artist":null,"playback":"none","cover":null,"volume":37,"render_devices":[],"capture_devices":[],"selected_render_id":null,"selected_capture_id":null,"error":null}
+
+id: 2
+data: {"revision":2,"available":true,"title":null,"artist":null,"playback":"none","cover":null,"volume":37,"render_devices":[],"capture_devices":[],"selected_render_id":null,"selected_capture_id":null,"error":null}
+
+"""
+        val client = StubClient(200, body)
+        val revisions = mutableListOf<Long>()
+        val reasons = mutableListOf<MediaEventTermination>()
+        val done = CountDownLatch(1)
+
+        client.openMediaEvents(0, { revisions += it.revision }, { reasons += it; done.countDown() })
+
+        assertTrue(done.await(2, TimeUnit.SECONDS))
+        assertEquals(listOf(1L), revisions)
+        assertEquals(listOf(MediaEventTermination.Eof), reasons)
+    }
+
 
     @Test
     fun `http error remains http termination and closes once`() {

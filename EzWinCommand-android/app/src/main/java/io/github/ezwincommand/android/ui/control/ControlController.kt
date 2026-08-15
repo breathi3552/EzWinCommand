@@ -18,32 +18,46 @@ class ControlController(
     private val pendingStore: PendingCommandStore? = null,
 ) : Closeable {
     private val commandInFlight = AtomicBoolean(false)
+    private val authorizationInvalidated = AtomicBoolean(false)
     private val trackingJobs = mutableMapOf<String, Job>()
     suspend fun load(): ControlUiState {
-        val a = apiClient.listActions()
-        val d = apiClient.listDevices()
+        if (authorizationInvalidated.get()) return authorizationError()
+        val actions = apiClient.listActions()
+        if (actions.isAuthInvalid()) {
+            reportAuthInvalid()
+            return authorizationError()
+        }
+        if (authorizationInvalidated.get()) return authorizationError()
+        val devices = apiClient.listDevices()
+        if (devices.isAuthInvalid()) {
+            reportAuthInvalid()
+            return authorizationError()
+        }
+        if (authorizationInvalidated.get()) return authorizationError()
         val media = apiClient.getMediaState()
+        if (media.isAuthInvalid()) {
+            reportAuthInvalid()
+            return authorizationError()
+        }
+        if (authorizationInvalidated.get()) return authorizationError()
         val authoritativeMedia = (media as? ApiResult.Success)?.value?.takeIf { it.revision > 0L }
         return when {
-            a.isAuthInvalid() || d.isAuthInvalid() || media.isAuthInvalid() -> {
-                onAuthInvalid()
-                ControlUiState.Error("授权已失效，请重新配对。", true)
-            }
-            a is ApiResult.Success && d is ApiResult.Success -> ControlUiState.Ready(
-                actions = a.value,
-                devices = d.value,
+            actions is ApiResult.Success && devices is ApiResult.Success -> ControlUiState.Ready(
+                actions = actions.value,
+                devices = devices.value,
                 media = authoritativeMedia ?: io.github.ezwincommand.android.model.MediaState.LOADING,
                 mediaLoading = authoritativeMedia == null,
             )
-            a is ApiResult.HttpError -> ControlUiState.Error(a.message, false)
-            d is ApiResult.HttpError -> ControlUiState.Error(d.message, false)
-            a is ApiResult.NetworkError -> ControlUiState.Error(a.message, false)
-            d is ApiResult.NetworkError -> ControlUiState.Error(d.message, false)
+            actions is ApiResult.HttpError -> ControlUiState.Error(actions.message, false)
+            devices is ApiResult.HttpError -> ControlUiState.Error(devices.message, false)
+            actions is ApiResult.NetworkError -> ControlUiState.Error(actions.message, false)
+            devices is ApiResult.NetworkError -> ControlUiState.Error(devices.message, false)
             else -> ControlUiState.Error("加载控制页失败。", false)
         }
     }
 
     suspend fun sendMediaAction(action: MediaAction): CommandResult {
+        if (authorizationInvalidated.get()) return authorizationErrorResult()
         val params: Map<String, Any?> = when (action) {
             MediaAction.PlayPause -> mapOf("sub_action" to "play_pause")
             MediaAction.Previous -> mapOf("sub_action" to "prev")
@@ -52,31 +66,45 @@ class ControlController(
             is MediaAction.SetOutputDevice -> mapOf("sub_action" to "set_output_device", "endpoint_id" to action.endpointId)
             is MediaAction.SetInputDevice -> mapOf("sub_action" to "set_input_device", "endpoint_id" to action.endpointId)
         }
-        return when (val result = apiClient.executeCommand("media", params)) {
-            is ApiResult.Success -> result.value
+        val result = when (val response = apiClient.executeCommand("media", params)) {
+            is ApiResult.Success -> response.value
             is ApiResult.HttpError -> {
-                if (result.status == 401 || result.status == 403) onAuthInvalid()
-                CommandResult(false, result.message, emptyMap())
+                if (response.status == 401 || response.status == 403) reportAuthInvalid()
+                CommandResult(false, response.message, emptyMap())
             }
-            is ApiResult.NetworkError -> CommandResult(false, result.message, emptyMap())
-            is ApiResult.ParseError -> CommandResult(false, result.message, emptyMap())
+            is ApiResult.NetworkError -> CommandResult(false, response.message, emptyMap())
+            is ApiResult.ParseError -> CommandResult(false, response.message, emptyMap())
         }
+        return if (authorizationInvalidated.get()) authorizationErrorResult(result.commandId) else result
     }
     suspend fun sendAction(command: ActionCommand): CommandResult {
-        if (!commandInFlight.compareAndSet(false,true)) return CommandResult(false,"命令正在执行，请稍候。",emptyMap())
+        if (authorizationInvalidated.get()) return authorizationErrorResult()
+        if (!commandInFlight.compareAndSet(false, true)) return CommandResult(false, "命令正在执行，请稍候。", emptyMap())
         try {
-            val existing = pendingStore?.get(command.action,command.params)
-            if (existing != null) return CommandResult(false,"相同命令正在执行，请稍候。",emptyMap(),existing,"queued")
-            return when (val r=apiClient.executeCommand(command.action,command.params)) {
+            if (authorizationInvalidated.get()) return authorizationErrorResult()
+            val existing = pendingStore?.get(command.action, command.params)
+            if (existing != null) return CommandResult(false, "相同命令正在执行，请稍候。", emptyMap(), existing, "queued")
+            val result = when (val response = apiClient.executeCommand(command.action, command.params)) {
                 is ApiResult.Success -> {
-                    val id=r.value.commandId
-                    if (id != null) { pendingStore?.put(command.action,command.params,id); CommandResult(true,"命令已受理",emptyMap(),id,r.value.status ?: "queued") } else r.value
+                    val id = response.value.commandId
+                    if (id != null) {
+                        pendingStore?.put(command.action, command.params, id)
+                        CommandResult(true, "命令已受理", emptyMap(), id, response.value.status ?: "queued")
+                    } else {
+                        response.value
+                    }
                 }
-                is ApiResult.HttpError -> { if(r.status==401||r.status==403) onAuthInvalid(); CommandResult(false,r.message,emptyMap()) }
-                is ApiResult.NetworkError -> CommandResult(false,r.message,emptyMap())
-                is ApiResult.ParseError -> CommandResult(false,r.message,emptyMap())
+                is ApiResult.HttpError -> {
+                    if (response.status == 401 || response.status == 403) reportAuthInvalid()
+                    CommandResult(false, response.message, emptyMap())
+                }
+                is ApiResult.NetworkError -> CommandResult(false, response.message, emptyMap())
+                is ApiResult.ParseError -> CommandResult(false, response.message, emptyMap())
             }
-        } finally { commandInFlight.set(false) }
+            return if (authorizationInvalidated.get()) authorizationErrorResult(result.commandId) else result
+        } finally {
+            commandInFlight.set(false)
+        }
     }
     suspend fun pollPending(
         command: ActionCommand,
@@ -87,67 +115,111 @@ class ControlController(
         val id = commandId ?: return null
         var lastParseError = false
         repeat(maxPolls) {
-            when(val s=apiClient.getCommandStatus(id)) {
-                is ApiResult.Success -> when(s.value.status) {
-                    "succeeded" -> { pendingStore?.remove(command.action,command.params); return CommandResult(true,s.value.message.orEmpty(),s.value.data?:emptyMap(),id,"succeeded") }
-                    "failed" -> { pendingStore?.remove(command.action,command.params); return CommandResult(false,s.value.message ?: "命令执行失败",s.value.data?:emptyMap(),id,"failed") }
+            if (authorizationInvalidated.get()) return null
+            when (val status = apiClient.getCommandStatus(id)) {
+                is ApiResult.Success -> {
+                    if (authorizationInvalidated.get()) return null
+                    when (status.value.status) {
+                        "succeeded" -> {
+                            pendingStore?.remove(command.action, command.params)
+                            return CommandResult(true, status.value.message.orEmpty(), status.value.data ?: emptyMap(), id, "succeeded")
+                        }
+                        "failed" -> {
+                            pendingStore?.remove(command.action, command.params)
+                            return CommandResult(false, status.value.message ?: "命令执行失败", status.value.data ?: emptyMap(), id, "failed")
+                        }
+                    }
                 }
                 is ApiResult.HttpError -> {
-                    if(s.status==401||s.status==403) { onAuthInvalid(); return CommandResult(false,s.message,emptyMap(),id) }
-                    if(s.status==404||s.status==410) { pendingStore?.removeById(id); return CommandResult(false,"命令已过期或服务已重启，可重新提交。",emptyMap(),id,"expired") }
-                    Unit
+                    if (status.status == 401 || status.status == 403) {
+                        reportAuthInvalid()
+                        return null
+                    }
+                    if (status.status == 404 || status.status == 410) {
+                        pendingStore?.removeById(id)
+                        return CommandResult(false, "命令已过期或服务已重启，可重新提交。", emptyMap(), id, "expired")
+                    }
                 }
                 is ApiResult.NetworkError -> Unit
-                is ApiResult.ParseError -> { lastParseError = true }
+                is ApiResult.ParseError -> lastParseError = true
             }
+            if (authorizationInvalidated.get()) return null
             if (pollDelayMs > 0) delay(pollDelayMs)
         }
+        if (authorizationInvalidated.get()) return null
         return if (lastParseError) {
-            CommandResult(false,"状态响应解析失败，可稍后重试",emptyMap(),id,"parse_error")
+            CommandResult(false, "状态响应解析失败，可稍后重试", emptyMap(), id, "parse_error")
         } else {
-            CommandResult(false,"仍在服务端执行，可稍后继续查询",emptyMap(),id,"running")
+            CommandResult(false, "仍在服务端执行，可稍后继续查询", emptyMap(), id, "running")
         }
     }
     fun trackPending(command: ActionCommand, scope: CoroutineScope, onResult: (CommandResult) -> Unit): Job? {
         val id = pendingStore?.get(command.action, command.params) ?: return null
         trackingJobs[id]?.let { if (it.isActive) return it }
-        val job = scope.launch(Dispatchers.IO) { pollPending(command, id)?.let(onResult) }
+        val job = scope.launch(Dispatchers.IO) {
+            pollPending(command, id)?.let { result ->
+                if (!authorizationInvalidated.get()) onResult(result)
+            }
+        }
         trackingJobs[id] = job
         job.invokeOnCompletion { synchronized(trackingJobs) { if (trackingJobs[id] === job) trackingJobs.remove(id) } }
         return job
     }
     fun trackAllPending(scope: CoroutineScope, onResult: (CommandResult) -> Unit) {
+        if (authorizationInvalidated.get()) return
         pendingStore?.allPending()?.forEach { trackPending(ActionCommand(it.action, it.params), scope, onResult) }
     }
     fun cancelTracking() { synchronized(trackingJobs) { trackingJobs.values.forEach { it.cancel() }; trackingJobs.clear() } }
+    fun invalidateAuthorization() {
+        authorizationInvalidated.set(true)
+        cancelTracking()
+    }
+    fun isAuthorizationInvalidated(): Boolean = authorizationInvalidated.get()
+
+    private fun reportAuthInvalid() {
+        val first = authorizationInvalidated.compareAndSet(false, true)
+        cancelTracking()
+        if (first) onAuthInvalid()
+    }
 
     override fun close() {
-        cancelTracking()
+        invalidateAuthorization()
         apiClient.close()
     }
-    suspend fun revokeDevice(deviceId: String): Boolean = when (val result = apiClient.revokeDevice(deviceId)) {
-        is ApiResult.Success -> result.value
-        is ApiResult.HttpError -> {
-            if (result.status == 401 || result.status == 403) onAuthInvalid()
-            false
+    suspend fun revokeDevice(deviceId: String): Boolean {
+        if (authorizationInvalidated.get()) return false
+        return when (val result = apiClient.revokeDevice(deviceId)) {
+            is ApiResult.Success -> result.value
+            is ApiResult.HttpError -> {
+                if (result.status == 401 || result.status == 403) reportAuthInvalid()
+                false
+            }
+            else -> false
         }
-        else -> false
     }
 
     suspend fun renameDevice(deviceId: String, name: String): Boolean =
-        if (name.trim().isEmpty()) {
+        if (authorizationInvalidated.get() || name.trim().isEmpty()) {
             false
         } else {
             when (val result = apiClient.renameDevice(deviceId, name.trim())) {
-                is ApiResult.Success -> result.value
+                is ApiResult.Success -> result.value.takeUnless { authorizationInvalidated.get() } ?: false
                 is ApiResult.HttpError -> {
-                    if (result.status == 401 || result.status == 403) onAuthInvalid()
+                    if (result.status == 401 || result.status == 403) reportAuthInvalid()
                     false
                 }
                 else -> false
             }
         }
 }
+
+private const val AUTHORIZATION_INVALID_MESSAGE = "授权已失效，请重新配对。"
+
+private fun ControlController.authorizationError(): ControlUiState.Error =
+    ControlUiState.Error(AUTHORIZATION_INVALID_MESSAGE, true)
+
+private fun authorizationErrorResult(commandId: String? = null): CommandResult =
+    CommandResult(false, AUTHORIZATION_INVALID_MESSAGE, emptyMap(), commandId)
 
 
 private fun <T> ApiResult<T>.isAuthInvalid() = this is ApiResult.HttpError && (status==401||status==403)

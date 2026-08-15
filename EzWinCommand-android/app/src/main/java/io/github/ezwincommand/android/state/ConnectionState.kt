@@ -41,3 +41,13 @@ sealed interface RestoreResult {
     data object NoSavedSession : RestoreResult
     data class InvalidSavedSession(val serverId: String?, val message: String) : RestoreResult
 }
+
+sealed interface AuthorizationFailureResolution {
+    val message: String
+
+    data class ConfirmedInvalid(override val message: String) : AuthorizationFailureResolution
+    data class DifferentServer(override val message: String) : AuthorizationFailureResolution
+    data class IdentityUnreachable(override val message: String) : AuthorizationFailureResolution
+    data class Incompatible(override val message: String) : AuthorizationFailureResolution
+    data class CleanupFailed(override val message: String) : AuthorizationFailureResolution
+}

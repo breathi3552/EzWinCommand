@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 sealed interface MediaEventTermination {
     data object Eof : MediaEventTermination
+    data object AuthorizationRevoked : MediaEventTermination
     data class NetworkError(val message: String) : MediaEventTermination
     data class HttpError(val status: Int, val message: String) : MediaEventTermination
     data object ClosedByCaller : MediaEventTermination
@@ -272,6 +273,10 @@ open class EzApiClient(
                     while (true) {
                         val line = reader.readLine() ?: break
                         if (line.isEmpty()) {
+                            if (event == "authorization_revoked") {
+                                terminate(MediaEventTermination.AuthorizationRevoked)
+                                break
+                            }
                             if (event == "media" && data.isNotEmpty()) {
                                 val id = eventId?.takeIf { it >= 0 } ?: throw IllegalArgumentException("media 事件缺少或 id 非法")
                                 val state = parseMediaState(JSONObject(data.joinToString("\n")))

@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.dispatcher import Dispatcher
+from agent.invalidation import DeviceRevoked
 from agent.auth import is_local_host
 from agent.command_tasks import AsyncCommandService
 from media.service import MediaService, MediaState
@@ -32,8 +33,8 @@ class MediaEventHub:
         self.service = service
         self.loop = loop
         self.replay: deque[MediaState] = deque(maxlen=64)
-        self.subscribers: dict[asyncio.Queue[MediaState | None], str] = {}
-        self.revoked_digests: set[str] = set()
+        self.subscribers: dict[asyncio.Queue[MediaState | DeviceRevoked | None], str] = {}
+        self.revoked_device_ids: set[str] = set()
         current = service.snapshot()
         self.replay.append(current)
         self._remove_listener = service.add_listener(self._from_media_thread)
@@ -45,8 +46,8 @@ class MediaEventHub:
         if self.replay and state.revision <= self.replay[-1].revision:
             return
         self.replay.append(state)
-        for queue, digest in tuple(self.subscribers.items()):
-            if digest in self.revoked_digests:
+        for queue, device_id in tuple(self.subscribers.items()):
+            if device_id in self.revoked_device_ids:
                 continue
             if queue.full():
                 try:
@@ -58,27 +59,27 @@ class MediaEventHub:
     def close(self) -> None:
         self._remove_listener()
         self.subscribers.clear()
-        self.revoked_digests.clear()
+        self.revoked_device_ids.clear()
 
-    def revoke(self, digest: str) -> None:
+    def revoke(self, event: DeviceRevoked) -> None:
         """终止指定已撤销设备的流，并禁止后续状态进入其 queue。"""
-        self.revoked_digests.add(digest)
-        for queue, subscriber_digest in tuple(self.subscribers.items()):
-            if subscriber_digest != digest:
+        self.revoked_device_ids.add(event.device_id)
+        for queue, subscriber_device_id in tuple(self.subscribers.items()):
+            if subscriber_device_id != event.device_id:
                 continue
             if queue.full():
                 try:
                     queue.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
-            queue.put_nowait(None)
+            queue.put_nowait(event)
 
 
-    def _subscribe(self, since: int, digest: str) -> tuple[asyncio.Queue[MediaState | None], list[MediaState]]:
-        if digest in self.revoked_digests:
+    def _subscribe(self, since: int, device_id: str) -> tuple[asyncio.Queue[MediaState | DeviceRevoked | None], list[MediaState]]:
+        if device_id in self.revoked_device_ids:
             raise PermissionError
-        queue: asyncio.Queue[MediaState | None] = asyncio.Queue(maxsize=1)
-        self.subscribers[queue] = digest
+        queue: asyncio.Queue[MediaState | DeviceRevoked | None] = asyncio.Queue(maxsize=1)
+        self.subscribers[queue] = device_id
         current = self.service.snapshot()
         if since > current.revision:
             self.subscribers.pop(queue, None)
@@ -101,24 +102,34 @@ class MediaEventHub:
             return [current]
         return [state for state in self.replay if state.revision > since]
 
-    async def stream(self, since: int, digest: str = "") -> AsyncIterator[str]:
+    async def stream(self, since: int, device_id: str = "") -> AsyncIterator[str]:
         try:
-            queue, initial = self._subscribe(since, digest)
+            queue, initial = self._subscribe(since, device_id)
         except PermissionError:
+            yield self.revoked_frame()
             return
         try:
             for state in initial:
+                if device_id in self.revoked_device_ids:
+                    yield self.revoked_frame()
+                    return
                 yield self.frame(state)
                 since = state.revision
             while True:
                 try:
                     wakeup = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    if wakeup is None or digest in self.revoked_digests:
+                    if isinstance(wakeup, DeviceRevoked):
+                        yield self.revoked_frame()
+                        return
+                    if wakeup is None or device_id in self.revoked_device_ids:
                         return
                 except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
                 for state in self.initial(since):
+                    if device_id in self.revoked_device_ids:
+                        yield self.revoked_frame()
+                        return
                     yield self.frame(state)
                     since = state.revision
         finally:
@@ -128,6 +139,10 @@ class MediaEventHub:
     def frame(state: MediaState) -> str:
         data = json.dumps(serialize_media_state(state), ensure_ascii=False, separators=(",", ":"))
         return f"id: {state.revision}\nevent: media\ndata: {data}\n\n"
+
+    @staticmethod
+    def revoked_frame() -> str:
+        return "event: authorization_revoked\ndata: {}\n\n"
 
 router = APIRouter()
 
@@ -341,8 +356,11 @@ async def get_media_events(request: Request):
         hub.initial(since)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    state = request.scope.get("state", {}).get("device_id")
+    if not _is_local_client(request) and not isinstance(state, str):
+        return JSONResponse(status_code=401, content={"detail": "未授权"})
     return StreamingResponse(
-        hub.stream(since, request.scope.get("state", {}).get("device_digest", "")),
+        hub.stream(since, state or ""),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -80,6 +80,11 @@ internal fun resolveReadableDeviceName(marketName: String?, manufacturer: String
     return buildName.ifBlank { fallback }
 }
 class MainActivity : AppCompatActivity() {
+    private data class DeferredAuthorizationFailure(
+        val serverId: String,
+        val baseUrl: String,
+        val owner: Any,
+    )
     private lateinit var binding: ActivityMainBinding
     private val sessionStore: ServerSessionStore by lazy {
         ServerSessionStore(getSharedPreferences("ezwincommand", MODE_PRIVATE), KeystoreCipher())
@@ -91,12 +96,17 @@ class MainActivity : AppCompatActivity() {
         AndroidUiCoordinator(connectionRepository) { serverId -> createController(serverId) }
     }
     private var activeController: ControlController? = null
+    private var activeControlOwner: Any? = null
     private var activeBaseUrl: String? = null
     private var hideTopMessageRunnable: Runnable? = null
     private var mediaConnection: MediaConnectionController? = null
     private var mediaVolumeActor: MediaVolumeActor? = null
     private var mediaLifecycleJob: Job? = null
     private var activeLoadJob: Job? = null
+    private var activeControlScreen: ControlScreen? = null
+    private var authorizationFailureJob: Job? = null
+    private var selfRevokeInFlight = false
+    private var deferredAuthorizationFailure: DeferredAuthorizationFailure? = null
     private val controlPageGate = ControlPageGate()
     private var activeReadyState: ControlUiState.Ready? = null
     private var pairingDialogGeneration = 0L
@@ -107,8 +117,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun trackActivePending() {
-        activeController?.trackAllPending(lifecycleScope) { result ->
-            runOnUiThread { showTopMessage(if (result.success) result.message else errorMessage(result.message)) }
+        val controller = activeController ?: return
+        controller.trackAllPending(lifecycleScope) { result ->
+            runOnUiThread {
+                if (activeController === controller && !controller.isAuthorizationInvalidated()) {
+                    showTopMessage(if (result.success) result.message else errorMessage(result.message))
+                }
+            }
         }
     }
 
@@ -562,7 +577,6 @@ class MainActivity : AppCompatActivity() {
                 showTopMessage(errorMessage(effect.message))
             }
             is AndroidUiEffect.OpenControl -> openControl(effect.serverId, effect.baseUrl)
-            AndroidUiEffect.ReturnToMain -> showMainScreen()
         }
     }
 
@@ -574,10 +588,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMainScreen() {
+        authorizationFailureJob?.cancel()
+        authorizationFailureJob = null
         closeMediaSession()
         activeController?.close()
         activeController = null
         activeBaseUrl = null
+        activeControlOwner = null
+        selfRevokeInFlight = false
+        deferredAuthorizationFailure = null
+        activeControlScreen = null
         binding.pairingContainer.visibility = View.VISIBLE
         binding.titleText.visibility = View.VISIBLE
         binding.connectionCard.visibility = View.GONE
@@ -599,17 +619,58 @@ class MainActivity : AppCompatActivity() {
         mediaLifecycleJob = null
     }
 
+    private fun handleAuthorizationFailure(serverId: String, baseUrl: String, owner: Any) {
+        if (activeControlOwner !== owner || activeBaseUrl != baseUrl || activeControlScreen == null) return
+        if (selfRevokeInFlight) {
+            deferredAuthorizationFailure = DeferredAuthorizationFailure(serverId, baseUrl, owner)
+            return
+        }
+        if (authorizationFailureJob?.isActive == true) return
+        activeController?.invalidateAuthorization()
+        closeMediaSession()
+        authorizationFailureJob = lifecycleScope.launch {
+            val resolution = connectionRepository.resolveAuthorizationFailure(serverId, baseUrl)
+            if (activeControlOwner !== owner || activeBaseUrl != baseUrl || activeControlScreen == null) return@launch
+            val message = resolution.message
+            val terminal = ControlUiState.Error(message, authInvalid = true)
+            activeReadyState = null
+            coordinator.updateControlState(serverId, baseUrl, terminal)
+            activeControlScreen?.render(
+                terminal,
+                onAction = {},
+                onRevokeDevice = {},
+                onRenameDevice = { _, _ -> },
+                onBackToPairing = { returnToPairing(baseUrl, terminal = true) },
+                onMediaRefresh = {},
+                onMediaIntent = {},
+            )
+            activeController?.close()
+            activeController = null
+            activeControlOwner = null
+        }
+        authorizationFailureJob?.invokeOnCompletion {
+            if (authorizationFailureJob?.isCompleted == true) authorizationFailureJob = null
+        }
+    }
+
     private fun openControl(serverId: String, baseUrl: String) {
+        val owner = Any()
+        selfRevokeInFlight = false
+        deferredAuthorizationFailure = null
+        activeControlOwner = owner
+        authorizationFailureJob?.cancel()
+        authorizationFailureJob = null
         closeMediaSession()
         activeController?.close()
         binding.pairingContainer.visibility = View.GONE
         binding.titleText.visibility = View.GONE
         val screen = ControlScreen(this)
+        activeControlScreen = screen
         binding.connectionCard.visibility = View.GONE
         binding.pairingCard.visibility = View.GONE
         binding.controlContainer.removeAllViews()
         binding.controlContainer.addView(screen)
-        val controller = createController(serverId)
+        val controller = createController(serverId, owner)
         activeController = controller
         activeBaseUrl = baseUrl
         val pageTicket = controlPageGate.begin(controller, baseUrl)
@@ -672,7 +733,7 @@ class MainActivity : AppCompatActivity() {
                                 val ready = activeReadyState ?: currentState as? ControlUiState.Ready ?: return@MediaConnectionController
                                 redraw(ready.copy(media = ready.media.copy(error = message), mediaLoading = false))
                             },
-                            onAuthInvalid = { lifecycleScope.launch { renderEffect(coordinator.onAuthInvalid(serverId)) } },
+                            onAuthInvalid = { handleAuthorizationFailure(serverId, baseUrl, owner) },
                         )
                         mediaConnection = connection
                         connection.start(controller)
@@ -705,9 +766,16 @@ class MainActivity : AppCompatActivity() {
         actionInvoker = { command ->
             lifecycleScope.launch {
                 val result = controller.sendAction(command)
+                if (controller.isAuthorizationInvalidated()) return@launch
                 showTopMessage(screen.showResult(result))
                 if (result.commandId != null && result.status != "succeeded" && result.status != "failed") {
-                    controller.trackPending(command, lifecycleScope) { tracked -> runOnUiThread { showTopMessage(if (tracked.success) tracked.message else errorMessage(tracked.message)) } }
+                    controller.trackPending(command, lifecycleScope) { tracked ->
+                        runOnUiThread {
+                            if (!controller.isAuthorizationInvalidated()) {
+                                showTopMessage(if (tracked.success) tracked.message else errorMessage(tracked.message))
+                            }
+                        }
+                    }
                 }
                 if (!result.success) showTopMessage(errorMessage(result.message))
             }
@@ -719,6 +787,7 @@ class MainActivity : AppCompatActivity() {
                     is MediaControlIntent.FinishVolume -> mediaVolumeActor?.finishGesture(intent.volume)
                     is MediaControlIntent.Execute -> {
                         val result = controller.sendMediaAction(intent.action)
+                        if (controller.isAuthorizationInvalidated()) return@launch
                         showTopMessage(screen.showResult(result))
                         if (!result.success) showTopMessage(errorMessage(result.message))
                     }
@@ -728,7 +797,9 @@ class MainActivity : AppCompatActivity() {
         revokeInvoker = { deviceId ->
             lifecycleScope.launch {
                 val knownDevices = activeReadyState?.devices.orEmpty()
-                when (
+                val selfRevoke = knownDevices.firstOrNull { it.deviceId == deviceId }?.isCurrent == true
+                if (selfRevoke) selfRevokeInFlight = true
+                try {
                     val transition = applyDeviceRevoke(
                         deviceId = deviceId,
                         devices = knownDevices,
@@ -740,24 +811,43 @@ class MainActivity : AppCompatActivity() {
                         },
                         refresh = controller::load,
                     )
-                ) {
-                    DeviceRevokeTransition.Failed -> {
-                        showTopMessage(errorMessage(getString(R.string.control_revoke_failed)))
+                    if (controller.isAuthorizationInvalidated()) return@launch
+                    when (transition) {
+                        DeviceRevokeTransition.Failed -> {
+                            showTopMessage(errorMessage(getString(R.string.control_revoke_failed)))
+                        }
+                        DeviceRevokeTransition.CleanupFailed -> {
+                            connectionRepository.invalidate(serverId)
+                            returnToPairing(baseUrl)
+                            showTopMessage(getString(R.string.control_revoke_cleanup_failed))
+                        }
+                        DeviceRevokeTransition.ReturnedToPairing -> {
+                            showTopMessage(getString(R.string.control_revoke_success))
+                        }
+                        is DeviceRevokeTransition.Refreshed -> {
+                            showTopMessage(getString(R.string.control_revoke_success))
+                            val refreshed = transition.state
+                            activeReadyState = refreshed as? ControlUiState.Ready
+                            coordinator.updateControlState(serverId, baseUrl, refreshed)
+                            screen.render(
+                                refreshed,
+                                actionInvoker,
+                                revokeInvoker,
+                                renameInvoker,
+                                { returnToPairing(baseUrl) },
+                                { mediaConnection?.refresh() },
+                                mediaIntentInvoker,
+                            )
+                        }
                     }
-                    DeviceRevokeTransition.CleanupFailed -> {
-                        connectionRepository.invalidate(serverId)
-                        returnToPairing(baseUrl)
-                        showTopMessage(getString(R.string.control_revoke_cleanup_failed))
-                    }
-                    DeviceRevokeTransition.ReturnedToPairing -> {
-                        showTopMessage(getString(R.string.control_revoke_success))
-                    }
-                    is DeviceRevokeTransition.Refreshed -> {
-                        showTopMessage(getString(R.string.control_revoke_success))
-                        val refreshed = transition.state
-                        activeReadyState = refreshed as? ControlUiState.Ready
-                        coordinator.updateControlState(serverId, baseUrl, refreshed)
-                        screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
+                } finally {
+                    if (selfRevoke) {
+                        selfRevokeInFlight = false
+                        val deferred = deferredAuthorizationFailure
+                        deferredAuthorizationFailure = null
+                        if (deferred != null && activeControlOwner === deferred.owner && activeControlScreen != null) {
+                            handleAuthorizationFailure(deferred.serverId, deferred.baseUrl, deferred.owner)
+                        }
                     }
                 }
             }
@@ -765,9 +855,11 @@ class MainActivity : AppCompatActivity() {
         renameInvoker = { deviceId, name ->
             lifecycleScope.launch {
                 val renamed = controller.renameDevice(deviceId, name)
+                if (controller.isAuthorizationInvalidated()) return@launch
                 showTopMessage(if (renamed) getString(R.string.control_rename_device_success) else errorMessage(getString(R.string.control_rename_device_failed)))
                 if (!renamed) return@launch
                 val refreshed = controller.load()
+                if (controller.isAuthorizationInvalidated()) return@launch
                 activeReadyState = refreshed as? ControlUiState.Ready
                 coordinator.updateControlState(serverId, baseUrl, refreshed)
                 screen.render(refreshed, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
@@ -776,17 +868,24 @@ class MainActivity : AppCompatActivity() {
         screen.render(controlState, actionInvoker, revokeInvoker, renameInvoker, { returnToPairing(baseUrl) }, { mediaConnection?.refresh() }, mediaIntentInvoker)
     }
 
-    private fun returnToPairing(baseUrl: String) {
+    private fun returnToPairing(baseUrl: String, terminal: Boolean = false) {
+        coordinator.returnToMain()
+        authorizationFailureJob?.cancel()
+        authorizationFailureJob = null
         closeMediaSession()
         activeController?.close()
         activeController = null
         activeBaseUrl = null
+        selfRevokeInFlight = false
+        deferredAuthorizationFailure = null
+        activeControlOwner = null
+        activeControlScreen = null
         binding.pairingContainer.visibility = View.VISIBLE
         binding.titleText.visibility = View.VISIBLE
         binding.controlContainer.removeAllViews()
         binding.connectionCard.visibility = View.VISIBLE
         populateBaseUrl(baseUrl)
-        showTopMessage(getString(R.string.main_connection_success))
+        showTopMessage(getString(if (terminal) R.string.main_returned_to_pairing else R.string.main_connection_success))
     }
 
     private fun populateBaseUrl(baseUrl: String) {
@@ -871,13 +970,19 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         discoveryClient.close()
+        authorizationFailureJob?.cancel()
+        authorizationFailureJob = null
         closeMediaSession()
         activeController?.close()
         activeController = null
+        selfRevokeInFlight = false
+        deferredAuthorizationFailure = null
+        activeControlOwner = null
+        activeControlScreen = null
         super.onDestroy()
     }
 
-    private fun createController(serverId: String): ControlController {
+    private fun createController(serverId: String, owner: Any = Any()): ControlController {
         val session = connectionRepository.session(serverId) ?: error("会话不存在")
         val apiClient = EzApiClient(session.baseUrl, { connectionRepository.deviceKey(serverId) }, timeoutMillis = 5_000)
         val pendingStore = io.github.ezwincommand.android.storage.PendingCommandStore(
@@ -886,10 +991,7 @@ class MainActivity : AppCompatActivity() {
             session.credentialVersion,
         )
         return ControlController(apiClient, onAuthInvalid = {
-            lifecycleScope.launch {
-                renderEffect(coordinator.onAuthInvalid(serverId))
-                showTopMessage(errorMessage(getString(R.string.main_restore_failed)))
-            }
+            runOnUiThread { handleAuthorizationFailure(serverId, session.baseUrl, owner) }
         }, pendingStore = pendingStore)
     }
 }

@@ -11,6 +11,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from agent.invalidation import DeviceRevoked
 from agent.protocol import PROTOCOL_HEADER, PROTOCOL_VERSION, protocol_mismatch_detail
 
 logger = logging.getLogger(__name__)
@@ -43,14 +44,14 @@ class AuthManager:
         self._pairings: dict[str, dict] = {}
         self._pairings_lock = RLock()
         self._change_listener: Callable[[frozenset[str]], None] | None = None
-        self._revoke_listener: Callable[[str], None] | None = None
+        self._invalidation_listener: Callable[[DeviceRevoked], None] | None = None
 
     def set_change_listener(self, listener: Callable[[frozenset[str]], None] | None) -> None:
         self._change_listener = listener
 
-    def set_revoke_listener(self, listener: Callable[[str], None] | None) -> None:
-        """设置设备撤销后的非敏感活动状态失效回调。"""
-        self._revoke_listener = listener
+    def set_invalidation_listener(self, listener: Callable[[DeviceRevoked], None] | None) -> None:
+        """设置设备关系撤销后的非敏感失效 seam。"""
+        self._invalidation_listener = listener
 
     def _notify(self, *domains: str) -> None:
         if self._change_listener is not None:
@@ -159,15 +160,9 @@ class AuthManager:
         return self._store.has_any_device()
 
     def remove_device(self, device_id: str) -> bool:
-        device_key = self._store.key_for_device_id(device_id)
         changed = self._store.remove_device(device_id)
-        if changed:
-            if device_key is not None and self._revoke_listener is not None:
-                try:
-                    self._revoke_listener(hashlib.sha256(device_key.encode()).hexdigest())
-                except Exception:
-                    logger.exception("设备撤销后的活动流失效失败")
-            self._notify("devices")
+        if changed and self._invalidation_listener is not None:
+            self._invalidation_listener(DeviceRevoked(device_id))
         return changed
 
     def rename_device(self, device_id: str, name: str) -> bool:
@@ -211,12 +206,13 @@ def create_auth_middleware(auth_manager: AuthManager):
             request = Request(scope, receive)
             header = request.headers.get("Authorization", "")
             key = header[7:] if header.startswith("Bearer ") else ""
-            if not key or not auth_manager.is_authorized(key):
+            device_id = auth_manager.device_id_for_key(key)
+            if not device_id or not auth_manager.is_authorized(key):
                 response = JSONResponse(status_code=401, content={"detail": "未授权"})
                 return await response(scope, receive, send)
             state = scope.setdefault("state", {})
             state["device_digest"] = hashlib.sha256(key.encode()).hexdigest()
-            state["device_id"] = auth_manager.device_id_for_key(key)
+            state["device_id"] = device_id
             await self._app(scope, receive, send)
 
     return _AuthMiddleware

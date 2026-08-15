@@ -67,6 +67,33 @@ class MediaControlScreenViewTest {
             ancestor = ancestorView.parent
         }
     }
+
+    @Test
+    fun `terminal authorization error hides controls and keeps top back operation`() {
+        val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()
+        val screen = ControlScreen(activity)
+        activity.setContentView(screen)
+        var backCalls = 0
+
+        screen.render(
+            ControlUiState.Error("授权已失效，请重新配对。", authInvalid = true),
+            {},
+            {},
+            { _, _ -> },
+            { backCalls++ },
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val management = screen.findViewById<View>(R.id.control_device_management)
+        assertEquals(View.GONE, management.visibility)
+        assertFalse(management.isEnabled)
+        val back = findViews(screen) {
+            it.contentDescription == activity.getString(io.github.ezwincommand.android.R.string.main_back_to_pairing)
+        }.single()
+        assertEquals(View.VISIBLE, back.visibility)
+        back.performClick()
+        assertEquals(1, backCalls)
+    }
     @Test
     fun `device selector keeps selection until command result`() {
         val activity = Robolectric.buildActivity(AppCompatActivity::class.java).setup().get()

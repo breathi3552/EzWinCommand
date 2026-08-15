@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from agent.api import LocalEventHub, MediaEventHub, router as api_router
+from agent.invalidation import DeviceInvalidationHub
 from agent.auth import AuthManager, create_auth_middleware
 from agent.command_tasks import AsyncCommandService, CommandTaskStore
 from agent.device_store import DeviceStore
@@ -42,10 +43,12 @@ def create_app(
         loop = asyncio.get_running_loop()
         media_hub = MediaEventHub(service, loop)
         local_hub = LocalEventHub(loop)
+        invalidation_hub = DeviceInvalidationHub(local_hub.publish, media_hub.revoke)
         application.state.media_event_hub = media_hub
         application.state.local_event_hub = local_hub
+        application.state.device_invalidation_hub = invalidation_hub
         application.state.auth_manager.set_change_listener(local_hub.publish)
-        application.state.auth_manager.set_revoke_listener(media_hub.revoke)
+        application.state.auth_manager.set_invalidation_listener(invalidation_hub.publish)
         try:
             service.start()
             # 发布失败仅隔离发现能力，HTTP 服务继续启动。
@@ -54,7 +57,7 @@ def create_app(
         finally:
             await asyncio.to_thread(publisher.close)
             application.state.auth_manager.set_change_listener(None)
-            application.state.auth_manager.set_revoke_listener(None)
+            application.state.auth_manager.set_invalidation_listener(None)
             local_hub.close()
             media_hub.close()
             dispatcher.close()
