@@ -1,5 +1,0 @@
-interface:
-  display_name: "选择工程 Skill"
-  short_description: "为当前任务选择最短充分路径"
-policy:
-  allow_implicit_invocation: false
