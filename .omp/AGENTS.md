@@ -13,8 +13,8 @@ EzWinCommand 是可信局域网内的 Windows 控制系统，包含 Python/FastA
 ## Skill 运行时
 
 `.agents/skills/` 是本仓库唯一的项目 Skill 目录。执行 Skill 时遵循 OMP 原生接口：
-
-- Skill 间调用读取 `skill://<name>`；文档中的 Skill 名称不是 shell slash command。
+- 当前任务按本文件、`.agents/skills/`、`docs/agents/` 与当前产品、ADR、长期测试资料执行；`docs/v*/REQ-*` 仅在用户明确要求历史复盘、迁移核查或恢复旧决策时读取。
+- Skill 间调用读取 `skill://<name>`；EzWinCommand 真实环境验证读取 `skill://ezwin-e2e`；文档中的 Skill 名称不是 shell slash command。
 - 需要并行独立上下文时使用 `task`；只读探索使用 `scout`，审查使用 `reviewer`，实现工作仅在没有更具体 agent 时使用通用 task agent。
 - session 交接与临时契约使用 `local://`，不写入仓库。
 - GitHub issue 与 PR 优先读取 `issue://`、`pr://`，写操作与搜索使用 `xd://github`；具体约定见 `docs/agents/issue-tracker.md`。
@@ -37,6 +37,5 @@ EzWinCommand 是可信局域网内的 Windows 控制系统，包含 Python/FastA
 - `EzWinCommand-server/agent/devices.json`、`plugins.json`、`command_tasks.json`、`server_identity.json` 是本机状态，不属于交付物。
 - 跨端 wire、配对、鉴权、设备、命令或媒体行为变化时，验证受影响的两端；仅有证据证明单端内部变化时才缩小范围。
 - UI/E2E 结果明确标记为 Automated、AI-assisted 或 Manual。未执行的人工项目写“待人工验证”，不得表述为通过。
-- 实际执行 Android 模拟器、ADB、Windows Server、Web 管理端、局域网配对、媒体或 Core Audio 验证时读取 `skill://ezwin-e2e`。
 - 交付前从目标到实现检查遗漏，从变更到目标检查 scope creep；测试通过不能代替目标核对。
 - 截图、UI dump、日志和临时测试报告是证据产物，不进入正式项目资料。
